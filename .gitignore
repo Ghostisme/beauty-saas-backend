@@ -1,0 +1,13 @@
+# Maven build output
+target/
+
+# IDE and local files
+.idea/
+.vscode/
+*.iml
+*.log
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
