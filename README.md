@@ -15,8 +15,14 @@
 ### 1. 数据库配置
 执行SQL脚本初始化数据库：
 ```bash
-mysql -u root -p < src/main/resources/sql/init.sql
+mysql --default-character-set=utf8mb4 -u root -p < src/main/resources/sql/init.sql
 ```
+
+如果旧数据库中默认 `admin` 账号的昵称显示乱码，可执行一次定向修复脚本：
+```bash
+mysql --default-character-set=utf8mb4 -u root -p < src/main/resources/sql/repair-admin-nickname.sql
+```
+脚本只修复 `beauty_saas.sys_user` 中已知的默认管理员乱码值，可重复执行，不覆盖已修改的昵称。
 
 ### 2. 修改配置
 修改 `src/main/resources/application.yml` 中的数据库连接信息：

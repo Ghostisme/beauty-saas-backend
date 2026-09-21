@@ -1,3 +1,6 @@
+-- 明确 SQL 文件的输入编码，避免客户端将 UTF-8 中文按 latin1 解读后写入。
+SET NAMES utf8mb4;
+
 -- 创建数据库
 CREATE DATABASE IF NOT EXISTS beauty_saas DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
