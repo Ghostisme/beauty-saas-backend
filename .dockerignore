@@ -1,0 +1,9 @@
+.git
+.idea
+.vscode
+.env
+.env.*
+target
+*.log
+*.sql.gz
+*-backup*

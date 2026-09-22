@@ -23,6 +23,10 @@ public class User implements Serializable {
     @TableId(type = IdType.AUTO)
     private Long id;
 
+    private Long tenantId;
+
+    private Long authVersion;
+
     /** 用户名 */
     private String username;
 

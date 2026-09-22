@@ -35,6 +35,10 @@ services:
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/beauty_saas?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
       SPRING_DATASOURCE_USERNAME: root
       SPRING_DATASOURCE_PASSWORD: root
+      JWT_SECRET: ${JWT_SECRET:-}
+      PLATFORM_PROVISIONING_KEY: ${PLATFORM_PROVISIONING_KEY:-}
+      PLATFORM_ADMIN_INITIAL_PASSWORD: ${PLATFORM_ADMIN_INITIAL_PASSWORD:-}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173}
       TZ: Asia/Shanghai
     volumes:
       - maven_cache:/root/.m2

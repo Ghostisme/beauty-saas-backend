@@ -10,9 +10,13 @@ spring:
   # 数据源配置
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/beauty_saas?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
-    username: root
-    password: root
+    url: ${DB_URL:jdbc:mysql://localhost:3306/beauty_saas?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:root}
+
+  flyway:
+    baseline-on-migrate: true
+    baseline-version: 0
 
   # Jackson配置
   jackson:
@@ -24,7 +28,6 @@ spring:
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
   global-config:
     db-config:
       id-type: auto
@@ -34,5 +37,13 @@ mybatis-plus:
 
 # JWT配置
 jwt:
-  secret: beauty-saas-secret-key-for-jwt-token-generation-2024
+  secret: ${JWT_SECRET:}
   expiration: 86400000  # 24小时，单位毫秒
+
+platform:
+  provisioning-key: ${PLATFORM_PROVISIONING_KEY:}
+  bootstrap-password: ${PLATFORM_ADMIN_INITIAL_PASSWORD:}
+
+app:
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173}

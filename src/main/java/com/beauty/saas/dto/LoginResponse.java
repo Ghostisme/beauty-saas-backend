@@ -5,6 +5,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.io.Serializable;
+import java.util.List;
 
 /**
  * 登录响应DTO
@@ -42,5 +43,13 @@ public class LoginResponse implements Serializable {
 
         /** 头像 */
         private String avatar;
+
+        private String phone;
+        private Long tenantId;
+        private String tenantCode;
+        private String tenantName;
+        private Boolean owner;
+        private Boolean platformAdmin;
+        private List<String> permissions;
     }
 }

@@ -28,11 +28,6 @@ public class UserController {
      */
     @PostMapping("/login")
     public Result<LoginResponse> login(@Validated @RequestBody LoginRequest request) {
-        try {
-            LoginResponse response = userService.login(request);
-            return Result.success("登录成功", response);
-        } catch (Exception e) {
-            return Result.error(e.getMessage());
-        }
+        return Result.success("登录成功", userService.login(request));
     }
 }
