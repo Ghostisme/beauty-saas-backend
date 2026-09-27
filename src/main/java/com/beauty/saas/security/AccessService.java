@@ -14,7 +14,8 @@ import static com.beauty.saas.iam.IamRepository.text;
 @RequiredArgsConstructor
 public class AccessService {
     public static final Set<String> COMPANY_PERMISSIONS = Set.of("tenant:read", "tenant:write", "users:write", "departments:write", "roles:read", "roles:write", "order-settings:read", "order-settings:write",
-        "sms-settings:read", "sms-settings:write", "sms-records:read", "sms-records:write", "sms-billing:read", "sms-billing:write");
+        "sms-settings:read", "sms-settings:write", "sms-records:read", "sms-records:write", "sms-billing:read", "sms-billing:write",
+        "items:read", "items:write", "inventory:read", "inventory:write", "commissions:read", "commissions:write");
     private final IamRepository repo;
     private final HttpServletRequest request;
     public AccountPrincipal current() {
