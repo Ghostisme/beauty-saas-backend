@@ -31,6 +31,30 @@ public class AppointmentService {
     private static String text(String value) { return value == null || value.isBlank() ? null : value.trim(); }
     private static String marks(int n) { return String.join(",", Collections.nCopies(n, "?")); }
 
+    /** Options are scoped by the same appointment permission as the calendar. */
+    public Map<String,Object> options(Long departmentId) {
+        var actor = actor("appointments:read");
+        var departments = new ArrayList<Long>();
+        if (departmentId != null) {
+            actor.requireDepartment("appointments:read", departmentId);
+            departments.add(departmentId);
+        } else if (!actor.global("appointments:read")) {
+            departments.addAll(actor.scopes().getOrDefault("appointments:read", Set.of()).stream().filter(id -> id > 0).toList());
+        }
+        if (departmentId == null && !actor.global("appointments:read") && departments.isEmpty())
+            return Map.of("staff", List.of(), "rooms", List.of(), "services", List.of());
+        var staffArgs = new ArrayList<Object>(List.of(actor.tenantId()));
+        var staffWhere = new StringBuilder(" WHERE u.tenant_id=? AND u.deleted=0 AND u.status=1");
+        if (!departments.isEmpty()) { staffWhere.append(" AND ud.department_id IN (").append(marks(departments.size())).append(")"); staffArgs.addAll(departments); }
+        var staff = repo.rows("SELECT DISTINCT u.id,u.nickname,u.username FROM sys_user u JOIN sys_user_department ud ON ud.tenant_id=u.tenant_id AND ud.user_id=u.id" + staffWhere + " ORDER BY u.nickname,u.id", staffArgs.toArray());
+        var roomArgs = new ArrayList<Object>(List.of(actor.tenantId()));
+        var roomWhere = new StringBuilder(" WHERE r.tenant_id=? AND r.status=1");
+        if (!departments.isEmpty()) { roomWhere.append(" AND dr.department_id IN (").append(marks(departments.size())).append(")"); roomArgs.addAll(departments); }
+        var rooms = repo.rows("SELECT DISTINCT r.id,r.name,r.code,dr.department_id FROM sys_room r JOIN sys_department_room dr ON dr.tenant_id=r.tenant_id AND dr.room_id=r.id" + roomWhere + " ORDER BY r.name,r.id", roomArgs.toArray());
+        var services = repo.rows("SELECT id,code,name,duration_minutes durationMinutes FROM biz_item WHERE tenant_id=? AND kind='PROJECT' AND status=1 ORDER BY name,id", actor.tenantId());
+        return Map.of("staff", staff, "rooms", rooms, "services", services);
+    }
+
     public Page<Map<String,Object>> list(AppointmentQuery query) {
         var actor = actor("appointments:read"); page(query.page(), query.pageSize());
         var args = new ArrayList<Object>(List.of(actor.tenantId()));

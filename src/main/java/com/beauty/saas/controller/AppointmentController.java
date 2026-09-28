@@ -17,6 +17,10 @@ import java.util.Map;
 public class AppointmentController {
     private final AppointmentService appointments;
 
+    @GetMapping("/options") public Result<Map<String,Object>> options(@RequestParam(required=false) Long departmentId) {
+        return Result.success(appointments.options(departmentId));
+    }
+
     @GetMapping public Result<Page<Map<String,Object>>> list(
         @RequestParam(required=false) @DateTimeFormat(iso=DateTimeFormat.ISO.DATE) LocalDate date,
         @RequestParam(required=false) Long departmentId, @RequestParam(required=false) String status,
