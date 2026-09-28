@@ -265,12 +265,20 @@ Jenkins 要先能拉到 Jenkinsfile:
 
 ```bash
 cd "d:\github_code\余乐圈美业项目资料\beauty-saas-backend"
-git add -A && git commit -m "feat: 新增 VPS 部署与 Jenkins 流水线" && git push
+# 只提交本次部署需要的文件；不要用 git add -A 把工作区其它脚本/改动带进去
+git add deploy .dockerignore
+git diff --cached --stat
+git commit -m "feat: add beauty VPS deployment pipeline"
+git push origin main
 ```
 
 ```bash
 cd "d:\github_code\余乐圈美业项目资料\beauty-saas-frontend"
-git add -A && git commit -m "feat: 新增容器化部署与 Jenkins 流水线" && git push
+# 同样只提交部署文件，先检查暂存清单
+git add deploy .dockerignore
+git diff --cached --stat
+git commit -m "feat: add beauty web deployment pipeline"
+git push origin main
 ```
 
 ### 5.2 部署顺序

@@ -34,7 +34,18 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --create-home --shell /usr/sbin/nologin beauty
 
-COPY --from=builder /app/target/*.jar app.jar
+# ⚠️ 必须精确到文件名，不能写 target/*.jar。
+#
+#    spring-boot:repackage 会在 target/ 下留两个文件：
+#      beauty-saas-backend-1.0.0.jar           ← 可执行胖包（要的是这个）
+#      beauty-saas-backend-1.0.0.jar.original  ← 原始瘦包
+#
+#    `*.jar` 会同时命中两者（.jar.original 也被这个模式匹配），Docker 把两个
+#    文件先后拷成同一个 app.jar，最终留下的是后写入的 .original 瘦包 ——
+#    它没有内嵌依赖也没有启动器，容器能起来但 JVM 找不到 main、
+#    端口上什么都没有，表现是 healthcheck 永远停在 starting，
+#    而容器日志里几乎没有线索。
+COPY --from=builder /app/target/beauty-saas-backend-1.0.0.jar app.jar
 RUN chown beauty:beauty /app/app.jar
 USER beauty
 

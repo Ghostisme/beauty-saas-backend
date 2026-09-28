@@ -110,6 +110,22 @@ pipeline {
             exit 1
           fi
 
+          # ⚠️ 值里含 $ 会被 compose 当成变量引用去插值，静默地把值截断，
+          #    注入容器的就是一个残缺的密钥。而 compose 只留一行
+          #    "The XXX variable is not set. Defaulting to a blank string."
+          #    很容易被当成无害 warning 忽略，然后长时间排查
+          #    「密码明明是对的为什么连不上」。
+          #
+          #    env 文件里要表示字面量 $ 必须写成 $$。
+          dollar_lines=$(awk '!/^[[:space:]]*#/ && /=/ { v=substr($0, index($0,"=")+1); if (index(v,"$") > 0) { k=substr($0,1,index($0,"=")-1); print "    行"NR": "k } }' "${APP_ENV_FILE}")
+          if [ -n "$dollar_lines" ]; then
+            echo "✗ ${APP_ENV_FILE} 里下列变量的值含 \$，会被 compose 插值截断："
+            echo "$dollar_lines"
+            echo "  改用不含 \$ 的值（openssl rand -hex 32 只产生 0-9a-f），"
+            echo "  或把值里每个 \$ 写成 \$\$ 转义。"
+            exit 1
+          fi
+
           # 外部网络：前后端两栈共用。声明成 external 的网络 compose 不会
           # 自动创建，缺了它 compose up 会直接失败。
           docker network inspect "${NETWORK}" >/dev/null 2>&1 || {
