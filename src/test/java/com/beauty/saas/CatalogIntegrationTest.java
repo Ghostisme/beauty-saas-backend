@@ -130,10 +130,12 @@ class CatalogIntegrationTest {
     @Test
     void appointmentsPersistAcrossCalendarQueriesAndSupportTemporaryBlocks() throws Exception {
         var date = LocalDate.of(2026, 9, 28);
+        var appointment = new java.util.LinkedHashMap<String, Object>();
+        appointment.put("departmentId", storeA); appointment.put("appointmentDate", date.toString()); appointment.put("startTime", "10:30:00"); appointment.put("durationMinutes", 60);
+        appointment.put("customerName", "林女士"); appointment.put("phone", "13800002018"); appointment.put("serviceName", "补水修护护理"); appointment.put("staffName", "小杨"); appointment.put("roomName", "护理间 A");
+        appointment.put("status", "CONFIRMED"); appointment.put("color", "#1677ff"); appointment.put("note", "首次到店");
         var created = data(call("POST", "/appointments", a.token(), null,
-            Map.of("departmentId", storeA, "appointmentDate", date.toString(), "startTime", "10:30:00", "durationMinutes", 60,
-                "customerName", "林女士", "phone", "13800002018", "serviceName", "补水修护护理", "staffName", "小杨", "roomName", "护理间 A",
-                "status", "CONFIRMED", "color", "#1677ff", "note", "首次到店")), 200);
+            appointment), 200);
         var id = created.asLong();
         var rows = data(call("GET", "/appointments?date=" + date + "&departmentId=" + storeA + "&page=1&pageSize=100", a.token(), null, null), 200);
         assertThat(rows.path("total").asInt()).isEqualTo(1);
@@ -145,5 +147,25 @@ class CatalogIntegrationTest {
         assertThat(data(call("GET", "/appointments?date=" + date + "&status=TEMP_BLOCK&page=1&pageSize=100", a.token(), null, null), 200).path("total").asInt()).isEqualTo(1);
         data(call("DELETE", "/appointments/" + id, a.token(), null, null), 200);
         assertThat(data(call("GET", "/appointments?date=" + date + "&page=1&pageSize=100", b.token(), null, null), 200).path("total").asInt()).isZero();
+    }
+
+    @Test
+    void inventoryBatchDocumentsAndCostAccountArePersistent() throws Exception {
+        data(call("POST", "/inventory/changes", a.token(), null,
+            Map.of("departmentId", storeA, "itemId", productA, "changeType", "IN", "quantity", new BigDecimal("10.000"),
+                "unitCost", new BigDecimal("70.00"), "referenceNo", "PO-002")), 200);
+        var batch = data(call("POST", "/inventory/batches", a.token(), null,
+            Map.of("departmentId", storeA, "itemId", productA, "batchName", "2026春季批次", "productionDate", "2026-03-01",
+                "expiryDate", "2028-03-01", "remark", "首批入库", "status", 1)), 200);
+        assertThat(batch.asLong()).isPositive();
+        assertThat(data(call("GET", "/inventory/batches?keyword=春季&page=1&pageSize=10", a.token(), null, null), 200).path("total").asInt()).isEqualTo(1);
+        var doc = data(call("POST", "/inventory/documents", a.token(), null,
+            Map.of("docType", "LIQUIDATION", "documentDate", "2026-09-28", "operatorName", "王店长", "status", "DRAFT", "remark", "月末盘点")), 200);
+        assertThat(doc.asLong()).isPositive();
+        assertThat(data(call("GET", "/inventory/documents?docType=LIQUIDATION&page=1&pageSize=10", a.token(), null, null), 200).path("total").asInt()).isEqualTo(1);
+        var account = data(call("GET", "/inventory/account?departmentId=" + storeA + "&startDate=2026-01-01&endDate=2026-12-31&page=1&pageSize=10", a.token(), null, null), 200);
+        assertThat(account.path("total").asInt()).isEqualTo(1);
+        assertThat(account.path("records").get(0).path("endingQuantity").decimalValue()).isEqualByComparingTo("10.000");
+        assertThat(account.path("records").get(0).path("inboundQuantity").decimalValue()).isEqualByComparingTo("10.000");
     }
 }
