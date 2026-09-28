@@ -33,6 +33,7 @@ class CustomerIntegrationTest {
     Enterprise a;
     Enterprise b;
     long storeA;
+    long storeB;
     record Enterprise(long id, String code, String token) {}
 
     @BeforeEach
@@ -41,6 +42,7 @@ class CustomerIntegrationTest {
         a = create("customers-a-" + UUID.randomUUID().toString().substring(0, 8));
         b = create("customers-b-" + UUID.randomUUID().toString().substring(0, 8));
         storeA = data(call("POST", "/iam/departments", root, a.id(), Map.of("name", "顾客门店", "code", "CUSTOMER_STORE", "type", "STORE", "sortOrder", 0, "status", 1)), 200).asLong();
+        storeB = data(call("POST", "/iam/departments", root, b.id(), Map.of("name", "顾客门店", "code", "CUSTOMER_STORE", "type", "STORE", "sortOrder", 0, "status", 1)), 200).asLong();
     }
 
     Enterprise create(String code) throws Exception {
@@ -85,10 +87,12 @@ class CustomerIntegrationTest {
     void platformCanReadAllCustomersButMustChooseTenantBeforeWriting() throws Exception {
         long first = data(call("POST", "/customers", a.token(), null, Map.of("name", "甲企业顾客", "phone", "13800002001")), 200).asLong();
         long second = data(call("POST", "/customers", b.token(), null, Map.of("name", "乙企业顾客", "phone", "13800002002")), 200).asLong();
+        data(call("POST", "/customers/storage", b.token(), null, Map.of("customerId", second, "storeId", storeB, "storageType", "PRODUCT", "itemName", "平台视图测试寄存", "quantity", 1)), 200);
         var all = data(call("GET", "/customers?page=1&pageSize=10", root, null, null), 200);
         assertThat(all.path("total").asInt()).isEqualTo(2);
         assertThat(all.path("records").get(0).path("tenantName").asText()).isNotBlank();
         assertThat(data(call("GET", "/customers/" + second, root, null, null), 200).path("tenantId").asLong()).isEqualTo(b.id());
+        assertThat(data(call("GET", "/customers/storage?page=1&pageSize=10", root, null, null), 200).path("records").get(0).path("tenantName").asText()).isNotBlank();
         assertThat(data(call("GET", "/customers?page=1&pageSize=10", root, a.id(), null), 200).path("total").asInt()).isEqualTo(1);
         data(call("POST", "/customers", root, null, Map.of("name", "禁止无范围写入", "phone", "13800002003")), 400);
         data(call("DELETE", "/customers/" + first, root, b.id(), null), 404);
