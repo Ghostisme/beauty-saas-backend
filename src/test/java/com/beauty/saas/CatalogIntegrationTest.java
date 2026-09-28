@@ -15,6 +15,7 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -124,5 +125,25 @@ class CatalogIntegrationTest {
             Map.of("kind", "PRODUCT", "name", "跨企业规则", "basis", "PERCENT", "rate", new BigDecimal("0.1000"),
                 "fixedAmount", new BigDecimal("0.00"), "status", 1, "rules", List.of(foreign))), 400);
         assertThat(saved.asLong()).isPositive();
+    }
+
+    @Test
+    void appointmentsPersistAcrossCalendarQueriesAndSupportTemporaryBlocks() throws Exception {
+        var date = LocalDate.of(2026, 9, 28);
+        var created = data(call("POST", "/appointments", a.token(), null,
+            Map.of("departmentId", storeA, "appointmentDate", date.toString(), "startTime", "10:30:00", "durationMinutes", 60,
+                "customerName", "林女士", "phone", "13800002018", "serviceName", "补水修护护理", "staffName", "小杨", "roomName", "护理间 A",
+                "status", "CONFIRMED", "color", "#1677ff", "note", "首次到店")), 200);
+        var id = created.asLong();
+        var rows = data(call("GET", "/appointments?date=" + date + "&departmentId=" + storeA + "&page=1&pageSize=100", a.token(), null, null), 200);
+        assertThat(rows.path("total").asInt()).isEqualTo(1);
+        assertThat(rows.path("records").get(0).path("customerName").asText()).isEqualTo("林女士");
+        data(call("PUT", "/appointments/" + id, a.token(), null,
+            Map.of("departmentId", storeA, "appointmentDate", date.toString(), "startTime", "10:30:00", "durationMinutes", 60,
+                "customerName", "临时占用", "serviceName", "时间占用", "staffName", "小杨", "roomName", "护理间 A",
+                "status", "TEMP_BLOCK", "color", "#722ed1")), 200);
+        assertThat(data(call("GET", "/appointments?date=" + date + "&status=TEMP_BLOCK&page=1&pageSize=100", a.token(), null, null), 200).path("total").asInt()).isEqualTo(1);
+        data(call("DELETE", "/appointments/" + id, a.token(), null, null), 200);
+        assertThat(data(call("GET", "/appointments?date=" + date + "&page=1&pageSize=100", b.token(), null, null), 200).path("total").asInt()).isZero();
     }
 }
