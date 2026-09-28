@@ -1,8 +1,13 @@
 .git
 .idea
 .vscode
+# 带 ** 前缀覆盖子目录：不加的话 `.env` 只匹配仓库根下那一个，
+# deploy/.env 这种仍会被打进构建上下文（虽然不会被 COPY 进镜像层，
+# 但没有必要把密钥文件交给 docker daemon）
 .env
 .env.*
+**/.env
+**/.env.*
 target
 *.log
 *.sql.gz

@@ -1,0 +1,380 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  余乐圈美业 / 后端 — 独立流水线
+//
+//  Jenkins 建 job（类型选「流水线」）时 Script Path 填：deploy/Jenkinsfile
+//  （Jenkins 把整个仓库 checkout 到工作区根，下面路径都从仓库根算起）
+//
+//  ⚠️ 和参考架构那六条流水线的一个重要区别：这里**不使用**
+//     `docker image prune -f` 和 `docker builder prune -f`。
+//     那两条是全局命令，会波及 VPS 上其它项目的镜像和构建缓存
+//     （之前误删过 12.89GB 缓存和别的项目的数据卷）。
+//     本流水线只按镜像名删自己的旧 tag，见 post.success。
+// ═══════════════════════════════════════════════════════════════════════
+
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    timeout(time: 30, unit: 'MINUTES')
+    // 同一条流水线不并发：两次构建同时 compose up 会互相抢容器
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+  }
+
+  // ── 触发方式 ──────────────────────────────────────────────────────
+  //  构建哪个分支由 job 配置里的 Branch Specifier 决定（填 */main），
+  //  下面的阶段不判断分支 —— 改那个字段等于改部署目标。
+  triggers {
+    // GitHub webhook 推送即触发。job 配置里也要勾上
+    // "GitHub hook trigger for GITScm polling"，两者配合才生效。
+    githubPush()
+    // 兜底：每 4 小时轮询一次，防 webhook 偶尔丢失（网络抖动、GitHub 侧重试失败）
+    pollSCM('H H/4 * * *')
+  }
+
+  parameters {
+    booleanParam(
+      name: 'FORCE_REBUILD',
+      defaultValue: false,
+      description: '忽略变更检测，强制重新打包镜像。只改了 server.env 的话不用勾这个，勾 REDEPLOY 就够了。'
+    )
+    booleanParam(
+      name: 'REDEPLOY',
+      defaultValue: false,
+      description: '不重新打包，只用当前镜像重新部署一次，让容器加载新的 server.env。改了密钥、数据库密码、CORS 之后用这个。'
+    )
+    booleanParam(
+      name: 'NO_CACHE',
+      defaultValue: false,
+      description: '禁用 Docker 层缓存。只在怀疑缓存脏了时用；正常的依赖变更不需要勾。'
+    )
+  }
+
+  environment {
+    IMAGE        = 'beauty-saas-backend'
+    CONTAINER    = 'beauty-saas-backend'
+    SERVICE      = 'backend'
+    PROJECT      = 'beauty-api'
+    COMPOSE_FILE = 'deploy/docker-compose.yml'
+    APP_ENV_FILE = '/opt/beauty-saas/server.env'
+    NETWORK      = 'beauty-saas-net'
+    BUILD_TAG_   = "${env.BUILD_NUMBER}-${env.GIT_COMMIT?.take(7) ?: 'nogit'}"
+    DOCKER_BUILDKIT = '1'
+  }
+
+  stages {
+
+    stage('环境自检') {
+      steps {
+        sh '''
+          set -e
+          echo ">>> Docker  $(docker --version)"
+          echo ">>> Compose $(docker compose version --short)"
+
+          if [ ! -f "${APP_ENV_FILE}" ]; then
+            echo "✗ 找不到 ${APP_ENV_FILE}"
+            echo "  服务器还没初始化，见 deploy/README.md 的「首次部署」章节"
+            exit 1
+          fi
+
+          # 占位符残留会让应用带着 CHANGE_ME 当密钥跑起来
+          if grep -q 'CHANGE_ME' "${APP_ENV_FILE}"; then
+            echo "✗ ${APP_ENV_FILE} 里还有 CHANGE_ME 占位符没填"
+            exit 1
+          fi
+
+          # 校验 env 格式。Docker 的 env_file 解析器只认三种行：# 注释、
+          # 空行、KEY=VALUE。多出别的形式会等到 compose up 才报
+          # "invalid environment variable"，且不告诉你是哪一行。
+          # 在这里拦住并指出行号，省一轮排查。
+          bad_lines=$(awk '!/^[[:space:]]*#/ && !/^[[:space:]]*$/ && !/^[A-Za-z_][A-Za-z0-9_]*=/ { print "    行"NR": "$0 }' "${APP_ENV_FILE}")
+          if [ -n "$bad_lines" ]; then
+            echo "✗ ${APP_ENV_FILE} 里有 env_file 无法解析的行："
+            echo "$bad_lines"
+            echo "  只接受：# 注释 / 空行 / KEY=VALUE（值不要加引号，不要写行尾注释）"
+            exit 1
+          fi
+
+          # 值尾部一个隐形 CR 会让数据库密码全部对不上，而报出来的错是
+          # 「认证失败」，极难联想到是行尾问题。这里只检测不修改 ——
+          # 那是 root 的文件，Jenkins 只有读权限。
+          #
+          # ⚠️ 用 tr 数 CR 字节，不要写 grep -q "$(printf '\\r')"：
+          #    命令替换会剥掉尾部的 CR，搜索模式变成空字符串，于是
+          #    **任何**文件都"匹配"不到 CR —— 是静默失效，比误报更难发现。
+          cr_count=$(tr -dc '\\r' < "${APP_ENV_FILE}" | wc -c | tr -d ' ')
+          if [ "${cr_count}" -gt 0 ]; then
+            echo "✗ ${APP_ENV_FILE} 带 CRLF 行尾（检出 ${cr_count} 个 CR 字节）"
+            echo "  请在服务器上执行：sed -i 's/\\r\$//' ${APP_ENV_FILE}"
+            exit 1
+          fi
+
+          # 外部网络：前后端两栈共用。声明成 external 的网络 compose 不会
+          # 自动创建，缺了它 compose up 会直接失败。
+          docker network inspect "${NETWORK}" >/dev/null 2>&1 || {
+            echo ">>> 创建 Docker 网络 ${NETWORK}"
+            docker network create --driver bridge "${NETWORK}"
+          }
+        '''
+        script {
+          // 记下当前在跑的镜像，失败时用它回滚
+          env.PREV_IMAGE = sh(
+            script: "docker inspect -f '{{.Config.Image}}' ${env.CONTAINER} 2>/dev/null || true",
+            returnStdout: true).trim()
+          echo "当前在跑的镜像：${env.PREV_IMAGE ?: '(无)'}"
+        }
+      }
+    }
+
+    stage('变更分析') {
+      steps {
+        script {
+          // 后端源码 + 构建/编排文件。前端仓库是独立的 job，这里不用管。
+          def depFiles   = ['pom.xml']
+          def infraFiles = ['deploy/Dockerfile', 'deploy/docker-compose.yml',
+                            'deploy/Jenkinsfile', '.dockerignore']
+
+          def previous = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT
+          def changed = null
+
+          if (params.FORCE_REBUILD) {
+            echo '已勾选 FORCE_REBUILD → 强制重新打包'
+          } else if (!previous) {
+            echo '没有「上次成功构建」记录（首次构建或历史被清理）→ 全量打包'
+          } else {
+            def diff = sh(
+              script: "git diff --name-only ${previous} ${env.GIT_COMMIT} 2>/dev/null || true",
+              returnStdout: true).trim()
+            if (diff) {
+              changed = diff.split('\n').collect { it.trim() }.findAll { it }
+            } else {
+              echo '拿不到有效 diff（可能 force push 过）→ 全量打包'
+            }
+          }
+
+          boolean srcChanged = false
+          boolean depChanged = false
+          boolean migrationChanged = false
+          int srcCount = 0
+          def changedDepFiles = []
+
+          if (changed == null) {
+            srcChanged = true
+            depChanged = true
+          } else {
+            changedDepFiles = changed.findAll { it in depFiles }
+            depChanged = !changedDepFiles.isEmpty()
+
+            // Flyway 迁移是 Java 类，随应用启动自动执行，不需要单独的阶段 ——
+            // 这点和 lumax 不同（那个是有序 SQL 脚本且没有已执行记录表）。
+            // 这里只是把它标出来，让日志里能看到本次带了 schema 变更。
+            migrationChanged = changed.any { it.startsWith('src/main/java/db/migration/') }
+
+            def srcFiles = changed.findAll { p ->
+              (p.startsWith('src/') || p in infraFiles) &&
+              !(p in depFiles) && !(p ==~ /(?i).*\.(md|txt)$/)
+            }
+            srcCount = srcFiles.size()
+            srcChanged = srcCount > 0
+
+            if (changed.any { it in infraFiles }) {
+              echo '构建/编排文件有变更 → 强制重新打包'
+              srcChanged = true
+            }
+          }
+
+          boolean needBuild = srcChanged || depChanged
+
+          if (!needBuild && !env.PREV_IMAGE) {
+            echo '本地没有可复用的旧镜像 → 强制打包'
+            needBuild = true
+            srcChanged = true
+          }
+
+          boolean needDeploy = needBuild || params.REDEPLOY
+
+          if (!needBuild && needDeploy) {
+            def prev = env.PREV_IMAGE
+            if (!prev) {
+              error 'REDEPLOY 需要一个已存在的镜像，但当前没有容器在跑'
+            }
+            env.DEPLOY_TAG = prev.contains(':') ? prev.substring(prev.lastIndexOf(':') + 1) : 'latest'
+            echo "只重新部署，沿用镜像 tag：${env.DEPLOY_TAG}"
+          } else {
+            env.DEPLOY_TAG = env.BUILD_TAG_
+          }
+
+          env.NEED_BUILD   = needBuild.toString()
+          env.NEED_DEPLOY  = needDeploy.toString()
+          env.DEPS_CHANGED = depChanged.toString()
+
+          // ── 打包决策表 ──────────────────────────────────────────
+          String basis = previous ? "${previous.take(7)}（上次成功构建）" : '无（首次构建）'
+          String srcLine = srcChanged ? "是   ${srcCount} 个文件" : '否'
+          if (migrationChanged) {
+            srcLine += '\n                    含 Flyway 迁移 → 应用启动时自动执行'
+          }
+          String depLine
+          if (depChanged) {
+            depLine = "是   ${changedDepFiles.join(', ')}\n                    → 依赖层缓存失效，本次会重解析依赖树"
+          } else {
+            depLine = '否   → 依赖层命中缓存，跳过依赖下载'
+          }
+          String verdict
+          if (needBuild) {
+            verdict = "重新打包镜像并部署（tag=${env.DEPLOY_TAG}）"
+          } else if (needDeploy) {
+            verdict = "只重新部署，不打包（沿用 ${env.DEPLOY_TAG}）"
+          } else {
+            verdict = '跳过 —— 本模块无变更'
+          }
+
+          echo """
+────────────────────────────────────────────────────────────────
+  打包决策 · 余乐圈美业 / 后端
+────────────────────────────────────────────────────────────────
+  比较基点      ${basis}
+  本次提交      ${env.GIT_COMMIT?.take(7) ?: '-'}
+
+  源码变更      ${srcLine}
+  依赖变更      ${depLine}
+
+  结论          ${verdict}
+────────────────────────────────────────────────────────────────
+"""
+
+          if (needBuild) {
+            currentBuild.description = "打包 ${env.DEPLOY_TAG}"
+          } else if (needDeploy) {
+            currentBuild.description = "仅重部署 ${env.DEPLOY_TAG}"
+          } else {
+            currentBuild.description = '无变更，已跳过'
+          }
+        }
+      }
+    }
+
+    stage('打包镜像') {
+      when { environment name: 'NEED_BUILD', value: 'true' }
+      steps {
+        script {
+          if (env.DEPS_CHANGED == 'true') {
+            echo 'pom.xml 有变更：依赖层会重跑，但 Maven 仓库挂了 BuildKit cache mount，已下载过的 jar 直接复用'
+          }
+          withEnv(["IMAGE_TAG=${env.DEPLOY_TAG}"]) {
+            sh """
+              set -e
+              docker compose -p '${env.PROJECT}' \\
+                --env-file '${env.APP_ENV_FILE}' \\
+                -f '${env.COMPOSE_FILE}' \\
+                build ${params.NO_CACHE ? '--no-cache' : ''} ${env.SERVICE}
+            """
+          }
+        }
+      }
+    }
+
+    stage('部署') {
+      when { environment name: 'NEED_DEPLOY', value: 'true' }
+      steps {
+        withEnv(["IMAGE_TAG=${env.DEPLOY_TAG}"]) {
+          sh '''
+            set -e
+            echo ">>> 滚动更新（tag=${IMAGE_TAG}）"
+            # 显式列出服务：mysql 已在跑时 compose 不会动它（配置没变），
+            # 只重建 backend
+            docker compose -p "${PROJECT}" --env-file "${APP_ENV_FILE}" \
+              -f "${COMPOSE_FILE}" up -d mysql backend
+            docker compose -p "${PROJECT}" --env-file "${APP_ENV_FILE}" \
+              -f "${COMPOSE_FILE}" ps
+          '''
+        }
+      }
+    }
+
+    stage('健康检查') {
+      when { environment name: 'NEED_DEPLOY', value: 'true' }
+      steps {
+        script {
+          // 首次部署要等 Spring 启动 + Flyway 跑 V1~V5 迁移，给到 240 秒
+          int rc = sh(returnStatus: true, script: '''
+            deadline=$(( $(date +%s) + 240 ))
+            state=unknown
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              state=$(docker inspect -f '{{.State.Health.Status}}' "${CONTAINER}" 2>/dev/null || echo missing)
+              if [ "$state" = "healthy" ]; then
+                echo "✓ ${CONTAINER} healthy"
+                exit 0
+              fi
+              echo "等待 ${CONTAINER}($state)"
+              sleep 5
+            done
+            echo "✗ 健康检查超时，最后状态: $state"
+            exit 1
+          ''')
+          if (rc != 0) {
+            echo '── 容器日志 ──────────────────────────────────────'
+            sh 'docker logs --tail 120 "${CONTAINER}" 2>&1 || true'
+            // OOMKilled 时容器日志往往是空的，单独报出来省一轮排查
+            sh 'echo "OOMKilled: $(docker inspect -f "{{.State.OOMKilled}}" "${CONTAINER}" 2>/dev/null || echo unknown)"'
+            error '健康检查未通过'
+          }
+
+          // 容器 healthy 只说明 HTTP 端口活着。这里再确认一次路由真的通：
+          // GET /api/user/login 只映射 POST，预期 405 —— 拿到 405 就证明
+          // DispatcherServlet 在正常工作。
+          sh '''
+            set +e
+            code=$(docker exec "${CONTAINER}" \
+              curl -sS -o /dev/null -w '%{http_code}' \
+              http://127.0.0.1:8080/api/user/login 2>/dev/null)
+            echo ">>> GET /api/user/login → ${code}（405 即正常，该路径只接受 POST）"
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    failure {
+      script {
+        boolean deployed = env.NEED_DEPLOY == 'true'
+        if (deployed && env.PREV_IMAGE) {
+          echo '── 回滚到上一版镜像 ───────────────────────────────'
+          // 把上一版重新打成 rollback tag，再用它 up 一次。
+          // 不直接用原 tag 是因为 compose 的 image 字段读 IMAGE_TAG 变量。
+          sh """
+            set +e
+            docker tag '${env.PREV_IMAGE}' '${env.IMAGE}:rollback'
+            IMAGE_TAG=rollback docker compose -p '${env.PROJECT}' \\
+              --env-file '${env.APP_ENV_FILE}' -f '${env.COMPOSE_FILE}' up -d mysql backend
+            IMAGE_TAG=rollback docker compose -p '${env.PROJECT}' \\
+              --env-file '${env.APP_ENV_FILE}' -f '${env.COMPOSE_FILE}' ps
+          """
+          echo "已回滚。失败版本 ${env.DEPLOY_TAG} 的镜像仍保留，可本地复现排查。"
+        } else if (deployed) {
+          echo '没有可回滚的上一版镜像（首次部署失败），请看上面的容器日志。'
+        }
+      }
+    }
+    success {
+      script {
+        if (env.NEED_BUILD == 'true') {
+          // ⚠️ 只按镜像名删本项目自己的旧 tag，保留最近 3 个。
+          //    刻意不用 `docker image prune` / `builder prune` ——
+          //    那是全局命令，会波及 VPS 上其它项目的镜像和构建缓存。
+          sh '''
+            set +e
+            docker images "${IMAGE}" --format '{{.Tag}}' \
+              | grep -E '^[0-9]+-' | sort -t- -k1,1 -n -r | tail -n +4 \
+              | while read -r tag; do
+                  echo "清理旧镜像 ${IMAGE}:${tag}"
+                  docker rmi "${IMAGE}:${tag}" >/dev/null 2>&1
+                done
+          '''
+        }
+      }
+    }
+  }
+}

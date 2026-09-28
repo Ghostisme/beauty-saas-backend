@@ -1,0 +1,136 @@
+# ═══════════════════════════════════════════════════════════════════════
+#  余乐圈美业 SaaS —— 后端栈（MySQL + Spring Boot）
+#
+#  ⚠️ 临时演示部署，后面要整体移除。
+#
+#  由 Jenkins 的 beauty-api 流水线部署（deploy/Jenkinsfile）。
+#  前端是独立的一栈（前端仓库的 deploy/docker-compose.yml），
+#  两者只通过外部网络 beauty-saas-net 相连 —— 各自独立发布、
+#  独立回滚，互不影响。
+#
+#  ┌─ 为什么自带 MySQL，不复用已有的 portfolio-mysql ────────────────┐
+#  │ 1. 复用要往一台跑着 agent_studio 的活实例里建库建号，移除时还得  │
+#  │    反向 DROP，风险不对称。                                       │
+#  │ 2. 本项目用 Flyway 管迁移，需要独占的库。                        │
+#  │ 3. 自带实例的数据全在 beauty-saas-mysql-data 一个卷里，          │
+#  │    删栈即删干净，不留残留。                                      │
+#  │ 代价是多约 200MB 内存，对临时演示可以接受。                      │
+#  └──────────────────────────────────────────────────────────────────┘
+#
+#  排查时直接用 docker 命令，不需要 compose 文件（它在 Jenkins 工作区里）：
+#    docker ps --filter name=beauty-saas
+#    docker logs -f beauty-saas-backend
+# ═══════════════════════════════════════════════════════════════════════
+name: beauty-api
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: beauty-saas-mysql
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      # 应用侧密码校验走 JWT，MySQL 这里用 native_password 省掉
+      # caching_sha2 在非 TLS 连接下的 RSA 公钥交换环节
+      - --default-authentication-plugin=mysql_native_password
+      - --max-connections=80
+      # 演示数据量下 128M 够用。不设的话 MySQL 8 默认占更多，
+      # 和 JVM 一起容易把小内存 VPS 顶满
+      - --innodb-buffer-pool-size=128M
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD 未设置}
+      MYSQL_DATABASE: beauty_saas
+      MYSQL_USER: beauty
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD 未设置}
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql-data:/var/lib/mysql
+    ports:
+      # 19306 是本项目专用的冷门端口。
+      #
+      # ⚠️ 绝不能映射 3306 —— VPS 上已有的 portfolio-mysql 占着
+      #    127.0.0.1:3306，撞上会报 port is already allocated 让整栈起不来。
+      #
+      # 后端连库不走这个端口：它在内部网络用容器名 mysql:3306 直连
+      #（容器内部的 3306 和 portfolio-mysql 的 3306 分属不同网络命名空间，
+      # 天然不冲突）。这里映射出来只为方便宿主机上连进去看数据 / 做备份。
+      # 只绑 127.0.0.1，公网扫不到，不需要在防火墙放行。
+      # 用不上可以把这两行注释掉，功能完全不受影响。
+      - "127.0.0.1:19306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks: [beauty]
+    logging: *default-logging
+
+  backend:
+    build:
+      # 上下文是仓库根目录，Dockerfile 在 deploy/ 下。
+      # Jenkins 把仓库 checkout 到工作区根，所以相对路径从仓库根算起。
+      context: ..
+      dockerfile: deploy/Dockerfile
+    # IMAGE_TAG 由 Jenkinsfile 注入（构建号-commit短哈希），
+    # 这样每次构建都有独立 tag，回滚时能精确指定版本。
+    # 手工 compose 时不带该变量，默认落到 latest。
+    image: beauty-saas-backend:${IMAGE_TAG:-latest}
+    container_name: beauty-saas-backend
+    restart: unless-stopped
+    environment:
+      # ⚠️ application.yml 读的是 DB_URL / DB_USERNAME / DB_PASSWORD，
+      #    不是 SPRING_DATASOURCE_*。别照搬仓库根目录那份开发用 compose。
+      DB_URL: jdbc:mysql://mysql:3306/beauty_saas?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
+      DB_USERNAME: beauty
+      DB_PASSWORD: ${MYSQL_PASSWORD:?}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 未设置}
+      PLATFORM_PROVISIONING_KEY: ${PLATFORM_PROVISIONING_KEY:?}
+      PLATFORM_ADMIN_INITIAL_PASSWORD: ${PLATFORM_ADMIN_INITIAL_PASSWORD:-}
+      # 同源部署（前端 / 和后端 /api 同域名）下浏览器不发跨域请求，
+      # 这个值实际用不上。但 CorsConfig 的 @Value 没有默认值，
+      # 留空会导致启动失败，所以必须给。
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?}
+      TZ: Asia/Shanghai
+    ports:
+      # 只绑 127.0.0.1：公网扫不到，只有宿主机 nginx 能反代进来。
+      # 19190 避开 portfolio 栈已占的 3010/3020/3021/3031/3306/5432/
+      # 5678/6379/8010/9008，也避开 8080/8443 这类常被扫描的端口。
+      - "127.0.0.1:19190:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    labels:
+      # VPS 上已有的 portfolio-autoheal 只认这个标签，
+      # 容器 unhealthy 时会在 30 秒内自动重启它
+      autoheal: "true"
+    # JVM + Tomcat 线程池实测在 512M 以内。Dockerfile 里设了
+    # MaxRAMPercentage=70，两者配套看：堆上限约 358M，
+    # 其余留给元空间、线程栈和直接内存。
+    mem_limit: 512m
+    networks: [beauty]
+    logging: *default-logging
+
+volumes:
+  mysql-data:
+    # 显式命名，避免 compose 加项目名前缀后难以辨认。
+    # 这是移除本项目时唯一需要删的卷。
+    name: beauty-saas-mysql-data
+
+networks:
+  beauty:
+    # 外部网络：前后端两栈共用，由 Jenkinsfile 的环境自检阶段确保存在
+    #（docker network create beauty-saas-net）。
+    #
+    # 声明成 external 而不是让 compose 自动创建，是因为两栈都要接入它 ——
+    # 谁先起都不该依赖对方，而 compose 自动建的网络会带项目名前缀，
+    # 两栈各建一个就连不通了。
+    external: true
+    name: beauty-saas-net
