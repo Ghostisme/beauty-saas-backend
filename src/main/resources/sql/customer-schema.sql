@@ -1,0 +1,43 @@
+-- V9: customer dossiers and stored-item records; no demo data is inserted.
+CREATE TABLE IF NOT EXISTS biz_customer (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    tenant_id BIGINT NOT NULL,
+    code VARCHAR(64) NOT NULL,
+    name VARCHAR(80) NOT NULL,
+    phone VARCHAR(30) NOT NULL,
+    level VARCHAR(50) NOT NULL DEFAULT '无等级',
+    source VARCHAR(80),
+    birthday DATE,
+    remark VARCHAR(1000),
+    tracker VARCHAR(80),
+    adviser VARCHAR(80),
+    store_id BIGINT,
+    card_count INT NOT NULL DEFAULT 0,
+    balance DECIMAL(14,2) NOT NULL DEFAULT 0,
+    spent DECIMAL(14,2) NOT NULL DEFAULT 0,
+    visit_count INT NOT NULL DEFAULT 0,
+    last_visit VARCHAR(255),
+    version BIGINT NOT NULL DEFAULT 0,
+    deleted TINYINT NOT NULL DEFAULT 0,
+    create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_customer_code (tenant_id,code),
+    INDEX idx_customer_list (tenant_id,deleted,create_time,id),
+    INDEX idx_customer_phone (tenant_id,phone),
+    CHECK (card_count >= 0 AND balance >= 0 AND spent >= 0 AND visit_count >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS biz_customer_storage (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    tenant_id BIGINT NOT NULL,
+    customer_id BIGINT NOT NULL,
+    store_id BIGINT,
+    storage_type VARCHAR(20) NOT NULL,
+    item_name VARCHAR(150) NOT NULL,
+    quantity DECIMAL(14,3) NOT NULL DEFAULT 1,
+    remark VARCHAR(300),
+    create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_customer_storage (tenant_id,customer_id,create_time,id),
+    CHECK (storage_type IN ('PRODUCT','PROJECT')),
+    CHECK (quantity > 0)
+);
