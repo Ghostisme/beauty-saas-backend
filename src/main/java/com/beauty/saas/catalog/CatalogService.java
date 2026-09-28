@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.*;
 import static com.beauty.saas.iam.IamRepository.*;
 
@@ -84,10 +85,13 @@ public class CatalogService {
         repo.insert("INSERT INTO biz_inventory_change(tenant_id,inventory_id,department_id,item_id,change_type,quantity,unit_cost,reason,reference_no,actor_id) VALUES(?,?,?,?,?,?,?,?,?,?)",actor.tenantId(),inventoryId,input.departmentId(),input.itemId(),type,changed,input.unitCost(),blank(input.reason()),blank(input.referenceNo()),actor.userId());
         return repo.one("SELECT i.id,i.department_id,d.name department_name,i.item_id,x.code item_code,x.name item_name,x.category,x.unit,x.spec,i.quantity,i.cost_price,i.warning_value,CASE WHEN i.quantity <= i.warning_value THEN 1 ELSE 0 END shortage,i.version,i.update_time FROM biz_inventory i JOIN biz_item x ON x.tenant_id=i.tenant_id AND x.id=i.item_id JOIN sys_department d ON d.tenant_id=i.tenant_id AND d.id=i.department_id WHERE i.tenant_id=? AND i.id=?",actor.tenantId(),inventoryId);
     }
-    public Page<Map<String,Object>> inventoryChanges(int page,int size,Long departmentId,Long itemId) {
+    public Page<Map<String,Object>> inventoryChanges(int page,int size,Long departmentId,Long itemId,String changeType,String search,LocalDate startDate,LocalDate endDate) {
         var actor=actor("inventory:read"); page(page,size); List<Object> args=new ArrayList<>(List.of(actor.tenantId())); String where=" WHERE c.tenant_id=?";
         if(departmentId!=null){actor.requireDepartment("inventory:read",departmentId);where+=" AND c.department_id=?";args.add(departmentId);} else where += departmentScope(actor, "inventory:read", "c.department_id", args); if(itemId!=null){where+=" AND c.item_id=?";args.add(itemId);}
-        long total=repo.count("SELECT COUNT(*) FROM biz_inventory_change c"+where,args.toArray());args.add(size);args.add((page-1)*size);
+        if(changeType!=null&&!changeType.isBlank()){var types=Arrays.stream(changeType.split(",")).map(String::trim).filter(value -> !value.isBlank()).distinct().toList();if(types.stream().anyMatch(value -> !Set.of("IN","OUT","ADJUST").contains(value)))throw new ApiException(400,"流水类型不正确");where+=" AND c.change_type IN ("+marks(types.size())+")";args.addAll(types);}
+        if(startDate!=null){where+=" AND c.create_time>=?";args.add(startDate.atStartOfDay());} if(endDate!=null){where+=" AND c.create_time<?";args.add(endDate.plusDays(1).atStartOfDay());}
+        var keyword=keyword(search);where+=" AND (LOWER(x.name) LIKE ? ESCAPE '!' OR LOWER(x.code) LIKE ? ESCAPE '!' OR LOWER(COALESCE(c.reference_no,'')) LIKE ? ESCAPE '!' OR LOWER(COALESCE(c.reason,'')) LIKE ? ESCAPE '!')";args.add(keyword);args.add(keyword);args.add(keyword);args.add(keyword);
+        long total=repo.count("SELECT COUNT(*) FROM biz_inventory_change c JOIN biz_item x ON x.tenant_id=c.tenant_id AND x.id=c.item_id"+where,args.toArray());args.add(size);args.add((page-1)*size);
         return new Page<>(repo.rows("SELECT c.*,d.name department_name,x.code item_code,x.name item_name FROM biz_inventory_change c JOIN sys_department d ON d.tenant_id=c.tenant_id AND d.id=c.department_id JOIN biz_item x ON x.tenant_id=c.tenant_id AND x.id=c.item_id"+where+" ORDER BY c.create_time DESC,c.id DESC LIMIT ? OFFSET ?",args.toArray()),total,page,size);
     }
 
