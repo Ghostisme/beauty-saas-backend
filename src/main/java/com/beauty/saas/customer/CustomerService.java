@@ -12,16 +12,17 @@ import java.math.BigDecimal;
 import java.util.*;
 import static com.beauty.saas.iam.IamRepository.*;
 
-/** Tenant-scoped customer dossiers. Business totals are snapshots until order/member ledgers are connected. */
+/** Tenant-scoped customer dossiers with a read-only all-tenant platform view. */
 @Service
 @RequiredArgsConstructor
 public class CustomerService {
-    private static final String COLUMNS = "c.id,c.tenant_id,c.code,c.name,c.phone,c.level,c.source,c.birthday,c.remark,c.tracker,c.adviser,c.store_id,COALESCE(d.name,'当前门店') store_name,c.card_count,c.balance,c.spent,c.visit_count,c.last_visit,c.version,c.create_time,c.update_time";
+    private static final String COLUMNS = "c.id,c.tenant_id,t.name tenant_name,t.code tenant_code,c.code,c.name,c.phone,c.level,c.source,c.birthday,c.remark,c.tracker,c.adviser,c.store_id,COALESCE(d.name,'当前门店') store_name,c.card_count,c.balance,c.spent,c.visit_count,c.last_visit,c.version,c.create_time,c.update_time";
+    private static final String CUSTOMER_FROM = " FROM biz_customer c JOIN sys_tenant t ON t.id=c.tenant_id LEFT JOIN sys_department d ON d.tenant_id=c.tenant_id AND d.id=c.store_id";
     private final IamRepository repo;
     private final AccessService access;
 
     private AccountPrincipal reader() {
-        var actor = access.currentTenant();
+        var actor = access.currentTenantOrPlatform();
         actor.require("customers:read");
         return actor;
     }
@@ -51,8 +52,9 @@ public class CustomerService {
     public Page<Map<String, Object>> list(CustomerQuery query) {
         var actor = reader();
         page(query.page(), query.pageSize());
-        var args = new ArrayList<Object>(List.of(actor.tenantId()));
-        var where = new StringBuilder(" WHERE c.tenant_id=? AND c.deleted=0");
+        var args = new ArrayList<Object>();
+        var where = new StringBuilder(" WHERE c.deleted=0");
+        if (actor.tenantId() > 0) { where.append(" AND c.tenant_id=?"); args.add(actor.tenantId()); }
         applyScope(actor, query.storeId(), where, args);
         if (query.storeId() != null) {
             actor.requireDepartment("customers:read", query.storeId());
@@ -65,19 +67,19 @@ public class CustomerService {
             where.append(" AND (LOWER(c.name) LIKE ? ESCAPE '!' OR c.phone LIKE ? ESCAPE '!' OR LOWER(c.code) LIKE ? ESCAPE '!')");
             args.add(value); args.add(value); args.add(value);
         }
-        var from = " FROM biz_customer c LEFT JOIN sys_department d ON d.tenant_id=c.tenant_id AND d.id=c.store_id";
-        var total = repo.count("SELECT COUNT(*)" + from + where, args.toArray());
+        var total = repo.count("SELECT COUNT(*)" + CUSTOMER_FROM + where, args.toArray());
         args.add(query.pageSize()); args.add((query.page() - 1) * query.pageSize());
-        var rows = repo.rows("SELECT " + COLUMNS + from + where + " ORDER BY c.create_time DESC,c.id DESC LIMIT ? OFFSET ?", args.toArray());
+        var rows = repo.rows("SELECT " + COLUMNS + CUSTOMER_FROM + where + " ORDER BY c.create_time DESC,c.id DESC LIMIT ? OFFSET ?", args.toArray());
         return new Page<>(rows, total, query.page(), query.pageSize());
     }
 
     public Map<String, Object> detail(long id) {
         var actor = reader();
-        var args = new ArrayList<Object>(List.of(actor.tenantId(), id));
-        var where = new StringBuilder(" WHERE c.tenant_id=? AND c.id=? AND c.deleted=0");
+        var args = new ArrayList<Object>(List.of(id));
+        var where = new StringBuilder(" WHERE c.id=? AND c.deleted=0");
+        if (actor.tenantId() > 0) { where.append(" AND c.tenant_id=?"); args.add(actor.tenantId()); }
         applyScope(actor, null, where, args);
-        var row = repo.one("SELECT " + COLUMNS + " FROM biz_customer c LEFT JOIN sys_department d ON d.tenant_id=c.tenant_id AND d.id=c.store_id" + where, args.toArray());
+        var row = repo.one("SELECT " + COLUMNS + CUSTOMER_FROM + where, args.toArray());
         if (row == null) throw new ApiException(404, "顾客不存在或不在可访问范围内");
         return row;
     }
@@ -119,8 +121,9 @@ public class CustomerService {
     public Page<Map<String, Object>> storages(StorageQuery query) {
         var actor = reader();
         page(query.page(), query.pageSize());
-        var args = new ArrayList<Object>(List.of(actor.tenantId()));
-        var where = new StringBuilder(" WHERE s.tenant_id=? AND c.deleted=0");
+        var args = new ArrayList<Object>();
+        var where = new StringBuilder(" WHERE c.deleted=0");
+        if (actor.tenantId() > 0) { where.append(" AND s.tenant_id=?"); args.add(actor.tenantId()); }
         if (!actor.global("customers:read")) {
             var allowed = actor.scopes().getOrDefault("customers:read", Set.of()).stream().filter(value -> value > 0).toList();
             if (allowed.isEmpty()) where.append(" AND 1=0");
@@ -133,10 +136,10 @@ public class CustomerService {
             where.append(" AND (LOWER(c.name) LIKE ? ESCAPE '!' OR c.phone LIKE ? ESCAPE '!' OR LOWER(c.code) LIKE ? ESCAPE '!' OR LOWER(s.item_name) LIKE ? ESCAPE '!')");
             args.add(value); args.add(value); args.add(value); args.add(value);
         }
-        var from = " FROM biz_customer_storage s JOIN biz_customer c ON c.tenant_id=s.tenant_id AND c.id=s.customer_id LEFT JOIN sys_department d ON d.tenant_id=s.tenant_id AND d.id=s.store_id";
+        var from = " FROM biz_customer_storage s JOIN biz_customer c ON c.tenant_id=s.tenant_id AND c.id=s.customer_id JOIN sys_tenant t ON t.id=s.tenant_id LEFT JOIN sys_department d ON d.tenant_id=s.tenant_id AND d.id=s.store_id";
         var total = repo.count("SELECT COUNT(*)" + from + where, args.toArray());
         args.add(query.pageSize()); args.add((query.page() - 1) * query.pageSize());
-        var rows = repo.rows("SELECT s.id,s.customer_id,c.name customer_name,c.phone,c.code customer_code,s.store_id,COALESCE(d.name,'当前门店') store_name,s.storage_type,s.item_name,s.quantity,s.remark,s.create_time" + from + where + " ORDER BY s.create_time DESC,s.id DESC LIMIT ? OFFSET ?", args.toArray());
+        var rows = repo.rows("SELECT s.id,s.tenant_id,t.name tenant_name,s.customer_id,c.name customer_name,c.phone,c.code customer_code,s.store_id,COALESCE(d.name,'当前门店') store_name,s.storage_type,s.item_name,s.quantity,s.remark,s.create_time" + from + where + " ORDER BY s.create_time DESC,s.id DESC LIMIT ? OFFSET ?", args.toArray());
         return new Page<>(rows, total, query.page(), query.pageSize());
     }
 

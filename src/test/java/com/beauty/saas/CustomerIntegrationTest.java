@@ -80,4 +80,19 @@ class CustomerIntegrationTest {
         data(call("DELETE", "/customers/" + id, a.token(), null, null), 200);
         assertThat(data(call("GET", "/customers?page=1&pageSize=10", a.token(), null, null), 200).path("total").asInt()).isZero();
     }
+
+    @Test
+    void platformCanReadAllCustomersButMustChooseTenantBeforeWriting() throws Exception {
+        long first = data(call("POST", "/customers", a.token(), null, Map.of("name", "甲企业顾客", "phone", "13800002001")), 200).asLong();
+        long second = data(call("POST", "/customers", b.token(), null, Map.of("name", "乙企业顾客", "phone", "13800002002")), 200).asLong();
+        var all = data(call("GET", "/customers?page=1&pageSize=10", root, null, null), 200);
+        assertThat(all.path("total").asInt()).isEqualTo(2);
+        assertThat(all.path("records").get(0).path("tenantName").asText()).isNotBlank();
+        assertThat(data(call("GET", "/customers/" + second, root, null, null), 200).path("tenantId").asLong()).isEqualTo(b.id());
+        assertThat(data(call("GET", "/customers?page=1&pageSize=10", root, a.id(), null), 200).path("total").asInt()).isEqualTo(1);
+        data(call("POST", "/customers", root, null, Map.of("name", "禁止无范围写入", "phone", "13800002003")), 400);
+        data(call("DELETE", "/customers/" + first, root, b.id(), null), 404);
+        data(call("DELETE", "/customers/" + first, root, a.id(), null), 200);
+        assertThat(data(call("GET", "/customers?page=1&pageSize=10", root, null, null), 200).path("total").asInt()).isEqualTo(1);
+    }
 }

@@ -37,6 +37,12 @@ public class AccessService {
         if (tenant<=0 || repo.count("SELECT COUNT(*) FROM sys_tenant WHERE id=?",tenant)==0) throw new ApiException(404,"企业不存在");
         return actor.inTenant(tenant);
     }
+    /** Read-only platform views may aggregate all tenants when no tenant is selected. */
+    public AccountPrincipal currentTenantOrPlatform() {
+        var actor = current();
+        if (actor.platformAdmin() && request.getHeader("X-Tenant-Id") == null) return actor;
+        return currentTenant();
+    }
     public AccountPrincipal reload(AccountPrincipal actor) {
         var fresh=load(actor.platformAdmin()?0:actor.tenantId(),actor.userId(),actor.authVersion());
         return actor.platformAdmin() && actor.tenantId()>0 ? fresh.inTenant(actor.tenantId()) : fresh;
