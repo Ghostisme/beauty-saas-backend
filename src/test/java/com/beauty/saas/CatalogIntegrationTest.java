@@ -140,6 +140,10 @@ class CatalogIntegrationTest {
         var rows = data(call("GET", "/appointments?date=" + date + "&departmentId=" + storeA + "&page=1&pageSize=100", a.token(), null, null), 200);
         assertThat(rows.path("total").asInt()).isEqualTo(1);
         assertThat(rows.path("records").get(0).path("customerName").asText()).isEqualTo("林女士");
+        var options = data(call("GET", "/appointments/options?departmentId=" + storeA, a.token(), null, null), 200);
+        assertThat(options.path("staff").isArray()).isTrue();
+        assertThat(options.path("rooms").isArray()).isTrue();
+        assertThat(options.path("services").isArray()).isTrue();
         data(call("PUT", "/appointments/" + id, a.token(), null,
             Map.of("departmentId", storeA, "appointmentDate", date.toString(), "startTime", "10:30:00", "durationMinutes", 60,
                 "customerName", "临时占用", "serviceName", "时间占用", "staffName", "小杨", "roomName", "护理间 A",
