@@ -40,7 +40,7 @@ public class CatalogService {
 
     public Page<Map<String,Object>> items(String type,int page,int size,String search,Integer status) {
         var actor=actor("items:read"); page(page,size); String k=kind(type); List<Object> args=new ArrayList<>(List.of(actor.tenantId(),k,keyword(search)));
-        String where=" WHERE tenant_id=? AND kind=? AND (LOWER(code) LIKE ? ESCAPE '!' OR LOWER(name) LIKE ? ESCAPE '!' OR LOWER(COALESCE(category,'')) LIKE ? ESCAPE '!')"; args.add(keyword(search)); args.add(keyword(search));
+        String where=" WHERE tenant_id=? AND kind=? AND (LOWER(code) LIKE ? ESCAPE '!' OR LOWER(name) LIKE ? ESCAPE '!' OR LOWER(COALESCE(brand,'')) LIKE ? ESCAPE '!' OR LOWER(COALESCE(category,'')) LIKE ? ESCAPE '!')"; args.add(keyword(search)); args.add(keyword(search)); args.add(keyword(search));
         if(status!=null){if(status!=0&&status!=1) throw new ApiException(400,"品项状态不正确"); where+=" AND status=?"; args.add(status);}
         long total=repo.count("SELECT COUNT(*) FROM biz_item"+where,args.toArray()); args.add(size);args.add((page-1)*size);
         return new Page<>(repo.rows("SELECT * FROM biz_item"+where+" ORDER BY id DESC LIMIT ? OFFSET ?",args.toArray()),total,page,size);
@@ -51,9 +51,9 @@ public class CatalogService {
             ? repo.one("SELECT id FROM biz_item WHERE tenant_id=? AND kind=? AND code=?",actor.tenantId(),k,code)
             : repo.one("SELECT id FROM biz_item WHERE tenant_id=? AND kind=? AND code=? AND id<>?",actor.tenantId(),k,code,id);
         if (duplicate != null) throw new ApiException(409,"同类型品项编码已存在");
-        if(id==null) return repo.insert("INSERT INTO biz_item(tenant_id,kind,code,name,category,price,duration_minutes,unit,spec,description,status) VALUES(?,?,?,?,?,?,?,?,?,?,?)",actor.tenantId(),k,code,input.name().trim(),blank(input.category()),input.price(),input.durationMinutes(),blank(input.unit()),blank(input.spec()),blank(input.description()),input.status());
+        if(id==null) return repo.insert("INSERT INTO biz_item(tenant_id,kind,code,name,brand,category,price,duration_minutes,unit,spec,description,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",actor.tenantId(),k,code,input.name().trim(),blank(input.brand()),blank(input.category()),input.price(),input.durationMinutes(),blank(input.unit()),blank(input.spec()),blank(input.description()),input.status());
         var old=repo.one("SELECT * FROM biz_item WHERE tenant_id=? AND id=? AND kind=? FOR UPDATE",actor.tenantId(),id,k); if(old==null) throw new ApiException(404,"品项不存在");
-        repo.update("UPDATE biz_item SET code=?,name=?,category=?,price=?,duration_minutes=?,unit=?,spec=?,description=?,status=?,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?",code,input.name().trim(),blank(input.category()),input.price(),input.durationMinutes(),blank(input.unit()),blank(input.spec()),blank(input.description()),input.status(),actor.tenantId(),id); return id;
+        repo.update("UPDATE biz_item SET code=?,name=?,brand=?,category=?,price=?,duration_minutes=?,unit=?,spec=?,description=?,status=?,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?",code,input.name().trim(),blank(input.brand()),blank(input.category()),input.price(),input.durationMinutes(),blank(input.unit()),blank(input.spec()),blank(input.description()),input.status(),actor.tenantId(),id); return id;
     }
     @Transactional public void deleteItem(long id,String type) { var actor=write("items:write"); String k=kind(type); if(repo.update("UPDATE biz_item SET status=0,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=? AND kind=?",actor.tenantId(),id,k)==0) throw new ApiException(404,"品项不存在"); }
     private static String blank(String s){return s==null||s.isBlank()?null:s.trim();}
@@ -64,10 +64,12 @@ public class CatalogService {
         if(query.departmentId()!=null){if(query.departmentId()<=0)throw new ApiException(400,"门店参数不正确"); actor.requireDepartment("inventory:read",query.departmentId()); where+=" AND i.department_id=?";args.add(query.departmentId());}
         else where += departmentScope(actor, "inventory:read", "i.department_id", args);
         if(query.itemId()!=null){where+=" AND i.item_id=?";args.add(query.itemId());}
+        if(query.brand()!=null&&!query.brand().isBlank()){where+=" AND LOWER(COALESCE(x.brand,''))=?";args.add(query.brand().trim().toLowerCase(Locale.ROOT));}
+        if(query.category()!=null&&!query.category().isBlank()){where+=" AND LOWER(COALESCE(x.category,''))=?";args.add(query.category().trim().toLowerCase(Locale.ROOT));}
         if(query.shortageOnly()) where += " AND i.quantity <= i.warning_value";
-        String search=keyword(query.keyword()); where+=" AND (LOWER(x.name) LIKE ? ESCAPE '!' OR LOWER(x.code) LIKE ? ESCAPE '!' OR LOWER(COALESCE(x.category,'')) LIKE ? ESCAPE '!')"; args.add(search);args.add(search);args.add(search);
+        String search=keyword(query.keyword()); where+=" AND (LOWER(x.name) LIKE ? ESCAPE '!' OR LOWER(x.code) LIKE ? ESCAPE '!' OR LOWER(COALESCE(x.brand,'')) LIKE ? ESCAPE '!' OR LOWER(COALESCE(x.category,'')) LIKE ? ESCAPE '!')"; args.add(search);args.add(search);args.add(search);args.add(search);
         long total=repo.count("SELECT COUNT(*) FROM biz_inventory i JOIN biz_item x ON x.tenant_id=i.tenant_id AND x.id=i.item_id"+where,args.toArray()); args.add(query.pageSize());args.add((query.page()-1)*query.pageSize());
-        String sql="SELECT i.id,i.department_id,d.name department_name,i.item_id,x.code item_code,x.name item_name,x.category,x.unit,x.spec,i.quantity,i.cost_price,i.warning_value,CASE WHEN i.quantity <= i.warning_value THEN 1 ELSE 0 END shortage,i.version,i.update_time FROM biz_inventory i JOIN biz_item x ON x.tenant_id=i.tenant_id AND x.id=i.item_id JOIN sys_department d ON d.tenant_id=i.tenant_id AND d.id=i.department_id"+where+" ORDER BY i.update_time DESC,i.id DESC LIMIT ? OFFSET ?";
+        String sql="SELECT i.id,i.department_id,d.name department_name,i.item_id,x.code item_code,x.name item_name,x.brand,x.category,x.unit,x.spec,i.quantity,i.cost_price,i.warning_value,CASE WHEN i.quantity <= i.warning_value THEN 1 ELSE 0 END shortage,i.version,i.update_time FROM biz_inventory i JOIN biz_item x ON x.tenant_id=i.tenant_id AND x.id=i.item_id JOIN sys_department d ON d.tenant_id=i.tenant_id AND d.id=i.department_id"+where+" ORDER BY i.update_time DESC,i.id DESC LIMIT ? OFFSET ?";
         return new Page<>(repo.rows(sql,args.toArray()),total,query.page(),query.pageSize());
     }
     @Transactional public Map<String,Object> changeInventory(InventoryChange input) {
@@ -83,16 +85,24 @@ public class CatalogService {
         if(row==null) inventoryId=repo.insert("INSERT INTO biz_inventory(tenant_id,department_id,item_id,quantity,cost_price,warning_value,version) VALUES(?,?,?,?,?,?,0)",actor.tenantId(),input.departmentId(),input.itemId(),next,input.unitCost(),warning == null ? BigDecimal.ZERO : warning);
         else {inventoryId=id(row,"id"); BigDecimal existingWarning = row.get("warningValue") == null ? BigDecimal.ZERO : new BigDecimal(row.get("warningValue").toString()); repo.update("UPDATE biz_inventory SET quantity=?,cost_price=?,warning_value=?,version=version+1,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?",next,input.unitCost(),warning == null ? existingWarning : warning,actor.tenantId(),inventoryId);}
         repo.insert("INSERT INTO biz_inventory_change(tenant_id,inventory_id,department_id,item_id,change_type,quantity,unit_cost,reason,reference_no,actor_id) VALUES(?,?,?,?,?,?,?,?,?,?)",actor.tenantId(),inventoryId,input.departmentId(),input.itemId(),type,changed,input.unitCost(),blank(input.reason()),blank(input.referenceNo()),actor.userId());
-        return repo.one("SELECT i.id,i.department_id,d.name department_name,i.item_id,x.code item_code,x.name item_name,x.category,x.unit,x.spec,i.quantity,i.cost_price,i.warning_value,CASE WHEN i.quantity <= i.warning_value THEN 1 ELSE 0 END shortage,i.version,i.update_time FROM biz_inventory i JOIN biz_item x ON x.tenant_id=i.tenant_id AND x.id=i.item_id JOIN sys_department d ON d.tenant_id=i.tenant_id AND d.id=i.department_id WHERE i.tenant_id=? AND i.id=?",actor.tenantId(),inventoryId);
+        return repo.one("SELECT i.id,i.department_id,d.name department_name,i.item_id,x.code item_code,x.name item_name,x.brand,x.category,x.unit,x.spec,i.quantity,i.cost_price,i.warning_value,CASE WHEN i.quantity <= i.warning_value THEN 1 ELSE 0 END shortage,i.version,i.update_time FROM biz_inventory i JOIN biz_item x ON x.tenant_id=i.tenant_id AND x.id=i.item_id JOIN sys_department d ON d.tenant_id=i.tenant_id AND d.id=i.department_id WHERE i.tenant_id=? AND i.id=?",actor.tenantId(),inventoryId);
     }
-    public Page<Map<String,Object>> inventoryChanges(int page,int size,Long departmentId,Long itemId,String changeType,String search,LocalDate startDate,LocalDate endDate) {
+    @Transactional public void updateInventoryWarning(long inventoryId, BigDecimal warningValue) {
+        var actor=write("inventory:write");
+        var row=repo.one("SELECT department_id FROM biz_inventory WHERE tenant_id=? AND id=? FOR UPDATE",actor.tenantId(),inventoryId);
+        if(row==null) throw new ApiException(404,"库存记录不存在");
+        actor.requireDepartment("inventory:write", id(row,"departmentId"));
+        repo.update("UPDATE biz_inventory SET warning_value=?,version=version+1,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?",warningValue,actor.tenantId(),inventoryId);
+    }
+    public Page<Map<String,Object>> inventoryChanges(int page,int size,Long departmentId,Long itemId,String changeType,String brand,String category,String search,LocalDate startDate,LocalDate endDate) {
         var actor=actor("inventory:read"); page(page,size); List<Object> args=new ArrayList<>(List.of(actor.tenantId())); String where=" WHERE c.tenant_id=?";
         if(departmentId!=null){actor.requireDepartment("inventory:read",departmentId);where+=" AND c.department_id=?";args.add(departmentId);} else where += departmentScope(actor, "inventory:read", "c.department_id", args); if(itemId!=null){where+=" AND c.item_id=?";args.add(itemId);}
         if(changeType!=null&&!changeType.isBlank()){var types=Arrays.stream(changeType.split(",")).map(String::trim).filter(value -> !value.isBlank()).distinct().toList();if(types.stream().anyMatch(value -> !Set.of("IN","OUT","ADJUST").contains(value)))throw new ApiException(400,"流水类型不正确");where+=" AND c.change_type IN ("+marks(types.size())+")";args.addAll(types);}
         if(startDate!=null){where+=" AND c.create_time>=?";args.add(startDate.atStartOfDay());} if(endDate!=null){where+=" AND c.create_time<?";args.add(endDate.plusDays(1).atStartOfDay());}
+        if(brand!=null&&!brand.isBlank()){where+=" AND LOWER(COALESCE(x.brand,''))=?";args.add(brand.trim().toLowerCase(Locale.ROOT));} if(category!=null&&!category.isBlank()){where+=" AND LOWER(COALESCE(x.category,''))=?";args.add(category.trim().toLowerCase(Locale.ROOT));}
         var keyword=keyword(search);where+=" AND (LOWER(x.name) LIKE ? ESCAPE '!' OR LOWER(x.code) LIKE ? ESCAPE '!' OR LOWER(COALESCE(c.reference_no,'')) LIKE ? ESCAPE '!' OR LOWER(COALESCE(c.reason,'')) LIKE ? ESCAPE '!')";args.add(keyword);args.add(keyword);args.add(keyword);args.add(keyword);
         long total=repo.count("SELECT COUNT(*) FROM biz_inventory_change c JOIN biz_item x ON x.tenant_id=c.tenant_id AND x.id=c.item_id"+where,args.toArray());args.add(size);args.add((page-1)*size);
-        return new Page<>(repo.rows("SELECT c.*,d.name department_name,x.code item_code,x.name item_name FROM biz_inventory_change c JOIN sys_department d ON d.tenant_id=c.tenant_id AND d.id=c.department_id JOIN biz_item x ON x.tenant_id=c.tenant_id AND x.id=c.item_id"+where+" ORDER BY c.create_time DESC,c.id DESC LIMIT ? OFFSET ?",args.toArray()),total,page,size);
+        return new Page<>(repo.rows("SELECT c.*,d.name department_name,x.code item_code,x.name item_name,x.brand,x.category FROM biz_inventory_change c JOIN sys_department d ON d.tenant_id=c.tenant_id AND d.id=c.department_id JOIN biz_item x ON x.tenant_id=c.tenant_id AND x.id=c.item_id"+where+" ORDER BY c.create_time DESC,c.id DESC LIMIT ? OFFSET ?",args.toArray()),total,page,size);
     }
 
     public Page<Map<String,Object>> commissions(String type,int page,int size,String search,Integer status) {

@@ -18,6 +18,6 @@ public final class InventoryWorkflowRequests {
         @NotNull LocalDate documentDate, @Size(max=80) String operatorName,
         @NotBlank @Pattern(regexp="DRAFT|PENDING|CONFIRMED|CANCELLED") String status,
         @Size(max=300) String remark) {}
-    public record DocumentQuery(int page, int pageSize, String docType, String keyword, Long sourceDepartmentId, Long targetDepartmentId, String status) {}
-    public record AccountQuery(int page, int pageSize, String keyword, Long departmentId, String startDate, String endDate) {}
+    public record DocumentQuery(int page, int pageSize, String docType, String keyword, Long sourceDepartmentId, Long targetDepartmentId, String status, LocalDate startDate, LocalDate endDate) {}
+    public record AccountQuery(int page, int pageSize, String keyword, String brand, String category, Long departmentId, String startDate, String endDate) {}
 }
