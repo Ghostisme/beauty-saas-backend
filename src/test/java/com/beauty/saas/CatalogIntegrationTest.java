@@ -172,4 +172,44 @@ class CatalogIntegrationTest {
         assertThat(account.path("records").get(0).path("endingQuantity").decimalValue()).isEqualByComparingTo("10.000");
         assertThat(account.path("records").get(0).path("inboundQuantity").decimalValue()).isEqualByComparingTo("10.000");
     }
+
+    @Test
+    void movementDocumentsApplyMultipleLinesAndExposeStockDetails() throws Exception {
+        var secondProduct = data(call("POST", "/items?kind=PRODUCT", a.token(), null,
+            Map.of("code", "SKU-002", "name", "护理面膜", "category", "护理", "price", new BigDecimal("50.00"),
+                "unit", "盒", "status", 1)), 200).asLong();
+        var line = new java.util.LinkedHashMap<String, Object>();
+        line.put("itemId", productA); line.put("quantity", new BigDecimal("3.500")); line.put("unitCost", new BigDecimal("72.00"));
+        line.put("batchName", "入库批次-001"); line.put("productionDate", "2026-09-01"); line.put("expiryDate", "2028-09-01");
+        var secondLine = new java.util.LinkedHashMap<String, Object>();
+        secondLine.put("itemId", secondProduct); secondLine.put("quantity", new BigDecimal("2.000")); secondLine.put("unitCost", new BigDecimal("25.00"));
+        var movement = new java.util.LinkedHashMap<String, Object>();
+        movement.put("changeType", "IN"); movement.put("departmentId", storeA); movement.put("documentDate", "2026-10-01");
+        movement.put("operatorName", "负责人"); movement.put("status", "CONFIRMED"); movement.put("remark", "产品入库单"); movement.put("lines", List.of(line, secondLine));
+        var documentId = data(call("POST", "/inventory/documents/with-lines", a.token(), null, movement), 200).asLong();
+        assertThat(documentId).isPositive();
+
+        var stock = data(call("GET", "/inventory?page=1&pageSize=10&itemId=" + productA, a.token(), null, null), 200);
+        var inventoryId = stock.path("records").get(0).path("id").asLong();
+        assertThat(stock.path("records").get(0).path("quantity").decimalValue()).isEqualByComparingTo("3.500");
+        var secondStock = data(call("GET", "/inventory?page=1&pageSize=10&itemId=" + secondProduct, a.token(), null, null), 200);
+        assertThat(secondStock.path("records").get(0).path("quantity").decimalValue()).isEqualByComparingTo("2.000");
+        assertThat(data(call("GET", "/inventory/" + inventoryId + "/changes?page=1&pageSize=50", a.token(), null, null), 200).path("total").asInt()).isEqualTo(1);
+        assertThat(data(call("GET", "/inventory/" + inventoryId + "/changes?page=1&pageSize=50&startDate=2025-01-01&endDate=2025-12-31", a.token(), null, null), 200).path("total").asInt()).isEqualTo(0);
+        assertThat(data(call("GET", "/inventory/" + inventoryId + "/changes?page=1&pageSize=50&startDate=2026-10-01&endDate=2026-10-01", a.token(), null, null), 200).path("total").asInt()).isEqualTo(1);
+        var batches = data(call("GET", "/inventory/batches?departmentId=" + storeA + "&itemId=" + productA + "&page=1&pageSize=10", a.token(), null, null), 200);
+        assertThat(batches.path("total").asInt()).isEqualTo(1);
+        assertThat(batches.path("records").get(0).path("quantity").decimalValue()).isEqualByComparingTo("3.500");
+
+        var outboundLine = new java.util.LinkedHashMap<String, Object>();
+        outboundLine.put("itemId", productA); outboundLine.put("quantity", new BigDecimal("1.500")); outboundLine.put("unitCost", new BigDecimal("72.00")); outboundLine.put("batchName", "入库批次-001");
+        var outbound = new java.util.LinkedHashMap<String, Object>();
+        outbound.put("changeType", "OUT"); outbound.put("departmentId", storeA); outbound.put("documentDate", "2026-10-01");
+        outbound.put("operatorName", "负责人"); outbound.put("status", "CONFIRMED"); outbound.put("lines", List.of(outboundLine));
+        data(call("POST", "/inventory/documents/with-lines", a.token(), null, outbound), 200);
+        stock = data(call("GET", "/inventory?page=1&pageSize=10&itemId=" + productA, a.token(), null, null), 200);
+        assertThat(stock.path("records").get(0).path("quantity").decimalValue()).isEqualByComparingTo("2.000");
+        batches = data(call("GET", "/inventory/batches?departmentId=" + storeA + "&itemId=" + productA + "&page=1&pageSize=10", a.token(), null, null), 200);
+        assertThat(batches.path("records").get(0).path("quantity").decimalValue()).isEqualByComparingTo("2.000");
+    }
 }

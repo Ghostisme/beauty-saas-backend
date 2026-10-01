@@ -57,7 +57,7 @@ public class InventoryWorkflowService {
         var actor = write(); department(actor, "inventory:write", input.departmentId());
         var item = repo.one("SELECT id FROM biz_item WHERE tenant_id=? AND id=? AND kind='PRODUCT' AND status=1", actor.tenantId(), input.itemId()); if (item == null) throw new ApiException(400, "批次只能关联启用中的产品");
         if (input.expiryDate() != null && input.productionDate() != null && input.expiryDate().isBefore(input.productionDate())) throw new ApiException(400, "到期日期不能早于生产日期");
-        return repo.insert("INSERT INTO biz_inventory_batch(tenant_id,department_id,item_id,batch_name,production_date,expiry_date,remark,status) VALUES(?,?,?,?,?,?,?,?)", actor.tenantId(), input.departmentId(), input.itemId(), input.batchName().trim(), input.productionDate(), input.expiryDate(), blank(input.remark()), input.status());
+        return repo.insert("INSERT INTO biz_inventory_batch(tenant_id,department_id,item_id,batch_name,quantity,production_date,expiry_date,remark,status) VALUES(?,?,?,?,?,?,?,?,?)", actor.tenantId(), input.departmentId(), input.itemId(), input.batchName().trim(), input.quantity() == null ? BigDecimal.ZERO : input.quantity(), input.productionDate(), input.expiryDate(), blank(input.remark()), input.status());
     }
     @Transactional public void deleteBatch(long id) { var actor = write(); var row = repo.one("SELECT department_id FROM biz_inventory_batch WHERE tenant_id=? AND id=? FOR UPDATE", actor.tenantId(), id); if (row == null) throw new ApiException(404, "批次不存在"); actor.requireDepartment("inventory:write", id(row, "departmentId")); repo.update("UPDATE biz_inventory_batch SET status=0,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?", actor.tenantId(), id); }
 
@@ -86,6 +86,113 @@ public class InventoryWorkflowService {
         var number = blank(input.documentNo()); if (number == null) number = "INV-" + System.currentTimeMillis();
         if (repo.one("SELECT id FROM biz_inventory_doc WHERE tenant_id=? AND document_no=?", actor.tenantId(), number) != null) throw new ApiException(409, "单据号已存在");
         return repo.insert("INSERT INTO biz_inventory_doc(tenant_id,doc_type,document_no,source_department_id,target_department_id,document_date,operator_name,status,remark,creator_id) VALUES(?,?,?,?,?,?,?,?,?,?)", actor.tenantId(), input.docType(), number, input.sourceDepartmentId(), input.targetDepartmentId(), input.documentDate(), blank(input.operatorName()), input.status(), blank(input.remark()), actor.userId());
+    }
+
+    /** Returns the real ledger rows behind the stock-row "库存明细" action. */
+    public Page<Map<String,Object>> inventoryChangesFor(long inventoryId, int page, int pageSize, LocalDate startDate, LocalDate endDate) {
+        var actor = actor("inventory:read"); page(page, pageSize);
+        var inventory = repo.one("SELECT department_id FROM biz_inventory WHERE tenant_id=? AND id=?", actor.tenantId(), inventoryId);
+        if (inventory == null) throw new ApiException(404, "库存记录不存在");
+        actor.requireDepartment("inventory:read", id(inventory, "departmentId"));
+        var args = new ArrayList<Object>(List.of(actor.tenantId(), inventoryId));
+        var dateFilter = dateWhere("create_time", startDate, endDate);
+        var rowDateFilter = dateWhere("c.create_time", startDate, endDate);
+        var countArgs = new ArrayList<Object>(args);
+        countArgs.addAll(List.of(dateArgs(startDate, endDate)));
+        var total = repo.count("SELECT COUNT(*) FROM biz_inventory_change WHERE tenant_id=? AND inventory_id=?" + dateFilter, countArgs.toArray());
+        args.addAll(List.of(dateArgs(startDate, endDate)));
+        args.add(pageSize); args.add((page - 1) * pageSize);
+        var rows = repo.rows("SELECT c.*,d.name department_name,x.code item_code,x.name item_name,x.brand,x.category,x.unit,x.spec "
+            + "FROM biz_inventory_change c JOIN sys_department d ON d.tenant_id=c.tenant_id AND d.id=c.department_id "
+            + "JOIN biz_item x ON x.tenant_id=c.tenant_id AND x.id=c.item_id "
+            + "WHERE c.tenant_id=? AND c.inventory_id=?" + rowDateFilter + " ORDER BY c.create_time DESC,c.id DESC LIMIT ? OFFSET ?", args.toArray());
+        return new Page<>(rows, total, page, pageSize);
+    }
+
+    /**
+     * Creates a product inbound/outbound document with multiple lines and, when
+     * submitted as CONFIRMED, applies every line to the inventory ledger in one
+     * transaction. This is the document flow shown by the reference screens.
+     */
+    @Transactional public long saveMovementDocument(MovementDocumentSave input) {
+        var actor = write();
+        department(actor, "inventory:write", input.departmentId());
+        var docType = "IN".equals(input.changeType()) ? "TRANSFER_IN" : "TRANSFER_OUT";
+        var number = blank(input.documentNo());
+        if (number == null) number = ("IN".equals(input.changeType()) ? "IN-" : "OUT-") + System.currentTimeMillis();
+        if (repo.one("SELECT id FROM biz_inventory_doc WHERE tenant_id=? AND document_no=?", actor.tenantId(), number) != null) {
+            throw new ApiException(409, "单据号已存在");
+        }
+        var documentId = repo.insert(
+            "INSERT INTO biz_inventory_doc(tenant_id,doc_type,document_no,source_department_id,target_department_id,document_date,operator_name,status,remark,creator_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            actor.tenantId(), docType,
+            number,
+            "IN".equals(input.changeType()) ? null : input.departmentId(),
+            "IN".equals(input.changeType()) ? input.departmentId() : null,
+            input.documentDate(), blank(input.operatorName()), input.status(), blank(input.remark()), actor.userId());
+
+        for (var line : input.lines()) {
+            var item = repo.one("SELECT id FROM biz_item WHERE tenant_id=? AND id=? AND kind='PRODUCT' AND status=1", actor.tenantId(), line.itemId());
+            if (item == null) throw new ApiException(400, "单据包含不存在或已停用的产品");
+            if (line.expiryDate() != null && line.productionDate() != null && line.expiryDate().isBefore(line.productionDate())) {
+                throw new ApiException(400, "到期日期不能早于生产日期");
+            }
+            repo.insert("INSERT INTO biz_inventory_doc_line(tenant_id,document_id,department_id,item_id,quantity,unit_cost,batch_name,production_date,expiry_date,remark) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                actor.tenantId(), documentId, input.departmentId(), line.itemId(), line.quantity(), line.unitCost(), blank(line.batchName()), line.productionDate(), line.expiryDate(), blank(line.remark()));
+            if ("CONFIRMED".equals(input.status())) {
+                var inventoryId = applyMovement(actor, input.departmentId(), line.itemId(), input.changeType(), line.quantity(), line.unitCost(), number, line.remark());
+                if ("IN".equals(input.changeType()) && line.batchName() != null && !line.batchName().isBlank()) {
+                    upsertBatch(actor.tenantId(), input.departmentId(), line, line.quantity());
+                } else if ("OUT".equals(input.changeType()) && line.batchName() != null && !line.batchName().isBlank()) {
+                    consumeBatch(actor.tenantId(), input.departmentId(), line.itemId(), line.batchName(), line.quantity());
+                }
+                // Keep the relationship explicit for future batch-level consumption flows.
+                if (inventoryId <= 0) throw new ApiException(500, "库存流水写入失败");
+            }
+        }
+        return documentId;
+    }
+
+    private long applyMovement(AccountPrincipal actor, long departmentId, long itemId, String type,
+                               BigDecimal quantity, BigDecimal unitCost, String referenceNo, String reason) {
+        var row = repo.one("SELECT * FROM biz_inventory WHERE tenant_id=? AND department_id=? AND item_id=? FOR UPDATE", actor.tenantId(), departmentId, itemId);
+        var current = row == null ? BigDecimal.ZERO : new BigDecimal(Objects.toString(row.get("quantity"), "0"));
+        var next = "IN".equals(type) ? current.add(quantity) : current.subtract(quantity);
+        if (next.signum() < 0) throw new ApiException(409, "库存不足，不能出库");
+        final long inventoryId;
+        if (row == null) {
+            inventoryId = repo.insert("INSERT INTO biz_inventory(tenant_id,department_id,item_id,quantity,cost_price,warning_value,version) VALUES(?,?,?,?,?,?,0)",
+                actor.tenantId(), departmentId, itemId, next, unitCost, BigDecimal.ZERO);
+        } else {
+            inventoryId = id(row, "id");
+            repo.update("UPDATE biz_inventory SET quantity=?,cost_price=?,version=version+1,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?",
+                next, unitCost, actor.tenantId(), inventoryId);
+        }
+        repo.insert("INSERT INTO biz_inventory_change(tenant_id,inventory_id,department_id,item_id,change_type,quantity,unit_cost,reason,reference_no,actor_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            actor.tenantId(), inventoryId, departmentId, itemId, type, quantity, unitCost, blank(reason), referenceNo, actor.userId());
+        return inventoryId;
+    }
+
+    private void upsertBatch(long tenantId, long departmentId, DocumentLineSave line, BigDecimal quantity) {
+        var existing = repo.one("SELECT id FROM biz_inventory_batch WHERE tenant_id=? AND department_id=? AND item_id=? AND batch_name=? AND status=1",
+            tenantId, departmentId, line.itemId(), line.batchName().trim());
+        if (existing == null) {
+            repo.insert("INSERT INTO biz_inventory_batch(tenant_id,department_id,item_id,batch_name,quantity,production_date,expiry_date,remark,status) VALUES(?,?,?,?,?,?,?,?,1)",
+                tenantId, departmentId, line.itemId(), line.batchName().trim(), quantity, line.productionDate(), line.expiryDate(), blank(line.remark()));
+        } else {
+            repo.update("UPDATE biz_inventory_batch SET quantity=quantity+?,production_date=COALESCE(production_date,?),expiry_date=COALESCE(expiry_date,?),update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?",
+                quantity, line.productionDate(), line.expiryDate(), tenantId, id(existing, "id"));
+        }
+    }
+
+    private void consumeBatch(long tenantId, long departmentId, long itemId, String batchName, BigDecimal quantity) {
+        var row = repo.one("SELECT id,quantity FROM biz_inventory_batch WHERE tenant_id=? AND department_id=? AND item_id=? AND batch_name=? AND status=1 FOR UPDATE",
+            tenantId, departmentId, itemId, batchName.trim());
+        if (row == null) throw new ApiException(409, "出库批次不存在或已停用");
+        var current = new BigDecimal(Objects.toString(row.get("quantity"), "0"));
+        if (current.compareTo(quantity) < 0) throw new ApiException(409, "批次库存不足，不能出库");
+        repo.update("UPDATE biz_inventory_batch SET quantity=quantity-?,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?",
+            quantity, tenantId, id(row, "id"));
     }
 
     public Page<Map<String,Object>> account(AccountQuery query) {
