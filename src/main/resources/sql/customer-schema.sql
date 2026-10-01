@@ -11,6 +11,13 @@ CREATE TABLE IF NOT EXISTS biz_customer (
     remark VARCHAR(1000),
     tracker VARCHAR(80),
     adviser VARCHAR(80),
+    gender VARCHAR(10),
+    birthday_type VARCHAR(10) DEFAULT '阳历',
+    join_date DATE,
+    avatar_url MEDIUMTEXT,
+    referrer VARCHAR(80),
+    initial_spent DECIMAL(14,2) NOT NULL DEFAULT 0,
+    referral_date DATE,
     store_id BIGINT,
     card_count INT NOT NULL DEFAULT 0,
     balance DECIMAL(14,2) NOT NULL DEFAULT 0,
@@ -24,7 +31,7 @@ CREATE TABLE IF NOT EXISTS biz_customer (
     UNIQUE KEY uk_customer_code (tenant_id,code),
     INDEX idx_customer_list (tenant_id,deleted,create_time,id),
     INDEX idx_customer_phone (tenant_id,phone),
-    CHECK (card_count >= 0 AND balance >= 0 AND spent >= 0 AND visit_count >= 0)
+    CHECK (card_count >= 0 AND balance >= 0 AND spent >= 0 AND visit_count >= 0 AND initial_spent >= 0)
 );
 
 CREATE TABLE IF NOT EXISTS biz_customer_storage (

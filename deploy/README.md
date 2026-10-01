@@ -122,7 +122,7 @@ docker network create --driver bridge beauty-saas-net
 
 ### 3.2 写两份 env
 
-**先改前两行**,密码别用引号和 `#`。四个密钥自动随机生成:
+**先改前两行**,密码别用引号和 `#`。三个密钥自动随机生成:
 
 ```bash
 ADMIN_PW='CHANGE_ME_设置一个强密码'
@@ -130,7 +130,7 @@ cat > /opt/beauty-saas/server.env <<EOF
 MYSQL_ROOT_PASSWORD=$(openssl rand -hex 32)
 MYSQL_PASSWORD=$(openssl rand -hex 32)
 JWT_SECRET=$(openssl rand -hex 32)
-PLATFORM_PROVISIONING_KEY=$(openssl rand -hex 32)
+PLATFORM_PROVISIONING_KEY=
 PLATFORM_ADMIN_INITIAL_PASSWORD=$ADMIN_PW
 CORS_ALLOWED_ORIGINS=https://beauty.darkrich.com
 EOF
@@ -479,6 +479,32 @@ openssl x509 -in /etc/letsencrypt/live/darkrich.com/cert.pem \
 | 改 nginx 配置 | 直接改 `/etc/nginx/conf.d/20-beauty.conf`,然后 `nginx -t && systemctl reload nginx` |
 
 注意**重启不等于重新部署** —— 用的还是原来那个镜像。
+
+### 平台 `admin` 密码失效 / 需要重新生成平台账号
+
+`PLATFORM_ADMIN_INITIAL_PASSWORD` **只在全新数据库且 `sys_platform_admin` 为空时
+初始化一次**，不会覆盖已经存在的平台账号。因此，部署后再把
+`056e08d2e98df905` 写回 `server.env`，然后只重启容器，账号密码仍可能是数据库里
+之前的旧值；这不是前端登录类型的问题。
+
+本仓库提供了只针对 `beauty_saas` 的现场重置脚本。它会先备份数据库，再确保平台
+账号 `admin` 存在、启用并关联到 `sys_platform_admin`，同时递增 `auth_version` 让旧
+Token 失效。脚本不会触碰 `portfolio-*` 容器、其它数据库或其它数据卷：
+
+```bash
+# Jenkins checkout 已包含本脚本时直接执行；--generate 会在终端显示一次新密码
+bash /var/lib/jenkins/workspace/beauty-api/deploy/reset-platform-admin.sh --generate
+```
+
+脚本打印的新密码只在终端显示一次，不写入文件。然后在登录页选择**平台登录**，账号
+填 `admin`，不要填写企业编码；密码填脚本刚打印的新密码。第一次登录成功后，应用会
+把兼容用的旧 MD5 密码自动升级为 BCrypt，请马上在右上角“修改密码”。
+
+如果 Jenkins workspace 路径不同，先在后端 checkout 目录执行：
+
+```bash
+bash deploy/reset-platform-admin.sh --generate
+```
 
 连数据库:
 

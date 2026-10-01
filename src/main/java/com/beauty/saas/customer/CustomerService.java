@@ -16,7 +16,7 @@ import static com.beauty.saas.iam.IamRepository.*;
 @Service
 @RequiredArgsConstructor
 public class CustomerService {
-    private static final String COLUMNS = "c.id,c.tenant_id,t.name tenant_name,t.code tenant_code,c.code,c.name,c.phone,c.level,c.source,c.birthday,c.remark,c.tracker,c.adviser,c.store_id,COALESCE(d.name,'当前门店') store_name,c.card_count,c.balance,c.spent,c.visit_count,c.last_visit,c.version,c.create_time,c.update_time";
+    private static final String COLUMNS = "c.id,c.tenant_id,t.name tenant_name,t.code tenant_code,c.code,c.name,c.phone,c.level,c.source,c.birthday,c.birthday_type,c.gender,c.join_date,c.avatar_url,c.referrer,c.initial_spent,c.referral_date,c.remark,c.tracker,c.adviser,c.store_id,COALESCE(d.name,'当前门店') store_name,c.card_count,c.balance,c.spent,c.visit_count,c.last_visit,c.version,c.create_time,c.update_time";
     private static final String CUSTOMER_FROM = " FROM biz_customer c JOIN sys_tenant t ON t.id=c.tenant_id LEFT JOIN sys_department d ON d.tenant_id=c.tenant_id AND d.id=c.store_id";
     private final IamRepository repo;
     private final AccessService access;
@@ -97,14 +97,14 @@ public class CustomerService {
             if (existing == null) throw new ApiException(404, "顾客不存在");
             if (existing.get("storeId") != null) actor.requireDepartment("customers:write", id(existing, "storeId"));
             var effectiveCode = code == null ? Objects.toString(existing.get("code"), null) : code;
-            repo.update("UPDATE biz_customer SET code=?,name=?,phone=?,level=?,source=?,birthday=?,remark=?,tracker=?,adviser=?,store_id=?,card_count=?,balance=?,spent=?,visit_count=?,last_visit=?,version=version+1,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?",
-                effectiveCode, name, phone, text(input.level()) == null ? "无等级" : input.level().trim(), text(input.source()), input.birthday(), text(input.remark()), text(input.tracker()), text(input.adviser()), storeId,
+            repo.update("UPDATE biz_customer SET code=?,name=?,phone=?,level=?,source=?,birthday=?,birthday_type=?,gender=?,join_date=?,avatar_url=?,referrer=?,initial_spent=?,referral_date=?,remark=?,tracker=?,adviser=?,store_id=?,card_count=?,balance=?,spent=?,visit_count=?,last_visit=?,version=version+1,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?",
+                effectiveCode, name, phone, text(input.level()) == null ? "无等级" : input.level().trim(), text(input.source()), input.birthday(), text(input.birthdayType()) == null ? "阳历" : input.birthdayType().trim(), text(input.gender()), input.joinDate(), text(input.avatarUrl()), text(input.referrer()), decimal(input.initialSpent(), existing.get("initialSpent")), input.referralDate(), text(input.remark()), text(input.tracker()), text(input.adviser()), storeId,
                 input.cardCount() == null ? id(existing, "cardCount") : input.cardCount(), decimal(input.balance(), existing.get("balance")), decimal(input.spent(), existing.get("spent")), input.visitCount() == null ? id(existing, "visitCount") : input.visitCount(), text(input.lastVisit()), actor.tenantId(), id);
             return id;
         }
         if (repo.count("SELECT COUNT(*) FROM biz_customer WHERE tenant_id=? AND code=?", actor.tenantId(), code) > 0) throw new ApiException(409, "顾客编号已存在");
-        return repo.insert("INSERT INTO biz_customer(tenant_id,code,name,phone,level,source,birthday,remark,tracker,adviser,store_id,card_count,balance,spent,visit_count,last_visit) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            actor.tenantId(), code, name, phone, text(input.level()) == null ? "无等级" : input.level().trim(), text(input.source()), input.birthday(), text(input.remark()), text(input.tracker()), text(input.adviser()), storeId,
+        return repo.insert("INSERT INTO biz_customer(tenant_id,code,name,phone,level,source,birthday,birthday_type,gender,join_date,avatar_url,referrer,initial_spent,referral_date,remark,tracker,adviser,store_id,card_count,balance,spent,visit_count,last_visit) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            actor.tenantId(), code, name, phone, text(input.level()) == null ? "无等级" : input.level().trim(), text(input.source()), input.birthday(), text(input.birthdayType()) == null ? "阳历" : input.birthdayType().trim(), text(input.gender()), input.joinDate(), text(input.avatarUrl()), text(input.referrer()), decimal(input.initialSpent(), BigDecimal.ZERO), input.referralDate(), text(input.remark()), text(input.tracker()), text(input.adviser()), storeId,
             input.cardCount() == null ? 0 : input.cardCount(), decimal(input.balance(), BigDecimal.ZERO), decimal(input.spent(), BigDecimal.ZERO), input.visitCount() == null ? 0 : input.visitCount(), text(input.lastVisit()));
     }
 

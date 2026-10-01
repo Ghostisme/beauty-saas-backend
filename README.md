@@ -29,6 +29,7 @@ mvn spring-boot:run
 - V2 保留原账号 ID、密码和其他企业数据，撤销其旧企业负责人 / 部门 / 角色关联，并递增会话版本。平台账号内部使用保留值 `tenant_id=0`，**不创建“平台企业”租户记录**。
 - 原密码保持不变；旧 MD5 密码在成功登录后升级为 BCrypt（超过 BCrypt 字节上限的遗留密码须通过改密接口更新）。V1 遇到有旧账号却没有有效 `admin` 的库会停止迁移并报错，不随机指定负责人。
 - 新空库不内置通用密码。首次部署显式设置 `PLATFORM_ADMIN_INITIAL_PASSWORD`，初始化平台 `admin`；存在平台账号时此变量不会重置其密码。之后从平台页面开通企业并指定独立企业管理员密码。
+- 线上已有平台账号但密码未知时，不要反复改 `PLATFORM_ADMIN_INITIAL_PASSWORD`；用 `deploy/reset-platform-admin.sh --generate` 做一次带备份的定向重置，脚本只操作 `beauty_saas`。
 - 原企业身份 JWT 及不含 `platformAdmin` 的旧浏览器缓存失效，需要重新登录。
 - 旧管理员昵称乱码修复仍可使用 `src/main/resources/sql/repair-admin-nickname.sql`；只处理原始种子账号的已知乱码，不覆盖正常昵称。
 
