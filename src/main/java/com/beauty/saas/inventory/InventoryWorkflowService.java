@@ -73,7 +73,7 @@ public class InventoryWorkflowService {
         if (query.endDate() != null) { where.append(" AND d.document_date<=?"); args.add(query.endDate()); }
         var search = keyword(query.keyword()); where.append(" AND (LOWER(d.document_no) LIKE ? ESCAPE '!' OR LOWER(COALESCE(d.remark,'')) LIKE ? ESCAPE '!')"); args.add(search); args.add(search);
         var total = repo.count("SELECT COUNT(*) FROM biz_inventory_doc d" + where, args.toArray()); args.add(query.pageSize()); args.add((query.page() - 1) * query.pageSize());
-        var rows = repo.rows("SELECT d.*,s.name source_department_name,t.name target_department_name FROM biz_inventory_doc d LEFT JOIN sys_department s ON s.tenant_id=d.tenant_id AND s.id=d.source_department_id LEFT JOIN sys_department t ON t.tenant_id=d.tenant_id AND t.id=d.target_department_id" + where + " ORDER BY d.document_date DESC,d.id DESC LIMIT ? OFFSET ?", args.toArray());
+        var rows = repo.rows("SELECT d.*,s.name source_department_name,t.name target_department_name,COALESCE(u.nickname,u.username) creator_name FROM biz_inventory_doc d LEFT JOIN sys_department s ON s.tenant_id=d.tenant_id AND s.id=d.source_department_id LEFT JOIN sys_department t ON t.tenant_id=d.tenant_id AND t.id=d.target_department_id LEFT JOIN sys_user u ON u.tenant_id=d.tenant_id AND u.id=d.creator_id" + where + " ORDER BY d.document_date DESC,d.id DESC LIMIT ? OFFSET ?", args.toArray());
         return new Page<>(rows, total, query.page(), query.pageSize());
     }
 
@@ -153,6 +153,33 @@ public class InventoryWorkflowService {
         return documentId;
     }
 
+    @Transactional public long saveLiquidationDocument(LiquidationDocumentSave input) {
+        var actor = write();
+        department(actor, "inventory:write", input.departmentId());
+        var number = blank(input.documentNo());
+        if (number == null) number = "ST-" + System.currentTimeMillis();
+        if (repo.one("SELECT id FROM biz_inventory_doc WHERE tenant_id=? AND document_no=?", actor.tenantId(), number) != null) {
+            throw new ApiException(409, "单据号已存在");
+        }
+        var documentId = repo.insert(
+            "INSERT INTO biz_inventory_doc(tenant_id,doc_type,document_no,source_department_id,target_department_id,document_date,operator_name,status,remark,creator_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            actor.tenantId(), "LIQUIDATION", number, input.departmentId(), null,
+            input.documentDate(), blank(input.operatorName()), input.status(), blank(input.remark()), actor.userId());
+        for (var line : input.lines()) {
+            var item = repo.one("SELECT id FROM biz_item WHERE tenant_id=? AND id=? AND kind='PRODUCT' AND status=1", actor.tenantId(), line.itemId());
+            if (item == null) throw new ApiException(400, "盘点单包含不存在或已停用的产品");
+            var inventory = repo.one("SELECT id,quantity,cost_price FROM biz_inventory WHERE tenant_id=? AND department_id=? AND item_id=? FOR UPDATE",
+                actor.tenantId(), input.departmentId(), line.itemId());
+            var bookQuantity = inventory == null ? BigDecimal.ZERO : new BigDecimal(Objects.toString(inventory.get("quantity"), "0"));
+            repo.insert("INSERT INTO biz_inventory_liquidation_line(tenant_id,document_id,department_id,item_id,book_quantity,actual_quantity,remark) VALUES(?,?,?,?,?,?,?)",
+                actor.tenantId(), documentId, input.departmentId(), line.itemId(), bookQuantity, line.actualQuantity(), blank(line.remark()));
+            if ("CONFIRMED".equals(input.status()) && Boolean.TRUE.equals(input.syncInventory())) {
+                applyAdjustment(actor, input.departmentId(), line.itemId(), line.actualQuantity(), inventory, number, line.remark());
+            }
+        }
+        return documentId;
+    }
+
     private long applyMovement(AccountPrincipal actor, long departmentId, long itemId, String type,
                                BigDecimal quantity, BigDecimal unitCost, String referenceNo, String reason) {
         var row = repo.one("SELECT * FROM biz_inventory WHERE tenant_id=? AND department_id=? AND item_id=? FOR UPDATE", actor.tenantId(), departmentId, itemId);
@@ -170,6 +197,25 @@ public class InventoryWorkflowService {
         }
         repo.insert("INSERT INTO biz_inventory_change(tenant_id,inventory_id,department_id,item_id,change_type,quantity,unit_cost,reason,reference_no,actor_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
             actor.tenantId(), inventoryId, departmentId, itemId, type, quantity, unitCost, blank(reason), referenceNo, actor.userId());
+        return inventoryId;
+    }
+
+    private long applyAdjustment(AccountPrincipal actor, long departmentId, long itemId, BigDecimal actualQuantity,
+                                 Map<String, Object> row, String referenceNo, String reason) {
+        var current = row == null ? BigDecimal.ZERO : new BigDecimal(Objects.toString(row.get("quantity"), "0"));
+        if (actualQuantity.compareTo(current) == 0) return row == null ? 0 : id(row, "id");
+        var unitCost = row == null ? BigDecimal.ZERO : new BigDecimal(Objects.toString(row.get("costPrice"), "0"));
+        final long inventoryId;
+        if (row == null) {
+            inventoryId = repo.insert("INSERT INTO biz_inventory(tenant_id,department_id,item_id,quantity,cost_price,warning_value,version) VALUES(?,?,?,?,?,?,0)",
+                actor.tenantId(), departmentId, itemId, actualQuantity, unitCost, BigDecimal.ZERO);
+        } else {
+            inventoryId = id(row, "id");
+            repo.update("UPDATE biz_inventory SET quantity=?,version=version+1,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?",
+                actualQuantity, actor.tenantId(), inventoryId);
+        }
+        repo.insert("INSERT INTO biz_inventory_change(tenant_id,inventory_id,department_id,item_id,change_type,quantity,unit_cost,reason,reference_no,actor_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            actor.tenantId(), inventoryId, departmentId, itemId, "ADJUST", actualQuantity.subtract(current).abs(), unitCost, blank(reason), referenceNo, actor.userId());
         return inventoryId;
     }
 
@@ -211,6 +257,68 @@ public class InventoryWorkflowService {
             row.put("inboundQuantity", in); row.put("outboundQuantity", out); row.put("openingQuantity", ending.subtract(in).add(out));
         }
         return new Page<>(rows, total, query.page(), query.pageSize());
+    }
+
+    public Map<String,Object> settings() {
+        var actor = actor("inventory:read");
+        actor.requireGlobal("inventory:read");
+        return settingsRow(actor.tenantId());
+    }
+
+    @Transactional public Map<String,Object> saveSettings(InventorySettingsSave input) {
+        var actor = write();
+        actor.requireGlobal("inventory:write");
+        var current = settingsRow(actor.tenantId());
+        var version = id(current, "version");
+        if (version != input.version()) throw new ApiException(409, "库存设置已被其他操作更新，请刷新后重试");
+        var existing = repo.one("SELECT tenant_id FROM biz_inventory_setting WHERE tenant_id=? FOR UPDATE", actor.tenantId());
+        Object[] values = {
+            actor.tenantId(), input.preventOrderOnShortage(), input.transferAutoConfirmEnabled(), input.transferAutoConfirmDays(),
+            input.stockAlertEnabled(), input.stockAlertValue(), input.expiryAlertEnabled(), input.expiryAlertMonths(),
+            input.salesDeductInventory(), input.deleteProductSyncInventory(), actor.userId()
+        };
+        if (existing == null) {
+            repo.update("INSERT INTO biz_inventory_setting(tenant_id,prevent_order_on_shortage,transfer_auto_confirm_enabled,transfer_auto_confirm_days,stock_alert_enabled,stock_alert_value,expiry_alert_enabled,expiry_alert_months,sales_deduct_inventory,delete_product_sync_inventory,version,updated_by,update_time) VALUES(?,?,?,?,?,?,?,?,?,?,0,?,CURRENT_TIMESTAMP)", values);
+        } else {
+            var changed = repo.update("UPDATE biz_inventory_setting SET prevent_order_on_shortage=?,transfer_auto_confirm_enabled=?,transfer_auto_confirm_days=?,stock_alert_enabled=?,stock_alert_value=?,expiry_alert_enabled=?,expiry_alert_months=?,sales_deduct_inventory=?,delete_product_sync_inventory=?,version=version+1,updated_by=?,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND version=?",
+                input.preventOrderOnShortage(), input.transferAutoConfirmEnabled(), input.transferAutoConfirmDays(), input.stockAlertEnabled(), input.stockAlertValue(), input.expiryAlertEnabled(), input.expiryAlertMonths(), input.salesDeductInventory(), input.deleteProductSyncInventory(), actor.userId(), actor.tenantId(), version);
+            if (changed != 1) throw new ApiException(409, "库存设置已被其他操作更新，请刷新后重试");
+        }
+        return settingsRow(actor.tenantId());
+    }
+
+    private Map<String,Object> settingsRow(long tenantId) {
+        var row = repo.one("SELECT prevent_order_on_shortage,transfer_auto_confirm_enabled,transfer_auto_confirm_days,stock_alert_enabled,stock_alert_value,expiry_alert_enabled,expiry_alert_months,sales_deduct_inventory,delete_product_sync_inventory,version FROM biz_inventory_setting WHERE tenant_id=?", tenantId);
+        var result = new LinkedHashMap<String,Object>();
+        if (row == null) {
+            result.put("preventOrderOnShortage", false);
+            result.put("transferAutoConfirmEnabled", false);
+            result.put("transferAutoConfirmDays", 0);
+            result.put("stockAlertEnabled", false);
+            result.put("stockAlertValue", BigDecimal.ZERO);
+            result.put("expiryAlertEnabled", false);
+            result.put("expiryAlertMonths", 6);
+            result.put("salesDeductInventory", true);
+            result.put("deleteProductSyncInventory", true);
+            result.put("version", 0L);
+            return result;
+        }
+        result.put("preventOrderOnShortage", flag(row, "preventOrderOnShortage"));
+        result.put("transferAutoConfirmEnabled", flag(row, "transferAutoConfirmEnabled"));
+        result.put("transferAutoConfirmDays", id(row, "transferAutoConfirmDays"));
+        result.put("stockAlertEnabled", flag(row, "stockAlertEnabled"));
+        result.put("stockAlertValue", row.get("stockAlertValue"));
+        result.put("expiryAlertEnabled", flag(row, "expiryAlertEnabled"));
+        result.put("expiryAlertMonths", id(row, "expiryAlertMonths"));
+        result.put("salesDeductInventory", flag(row, "salesDeductInventory"));
+        result.put("deleteProductSyncInventory", flag(row, "deleteProductSyncInventory"));
+        result.put("version", id(row, "version"));
+        return result;
+    }
+
+    private static boolean flag(Map<String,Object> row, String name) {
+        var value = row.get(name);
+        return value instanceof Boolean b ? b : value instanceof Number n && n.intValue() != 0;
     }
     private static LocalDate parse(String value) { try { return value == null || value.isBlank() ? null : LocalDate.parse(value); } catch (Exception e) { throw new ApiException(400, "日期格式不正确"); } }
     private static String dateWhere(String column, LocalDate start, LocalDate end) { var sql = ""; if (start != null) sql += " AND " + column + ">=?"; if (end != null) sql += " AND " + column + "<?"; return sql; }

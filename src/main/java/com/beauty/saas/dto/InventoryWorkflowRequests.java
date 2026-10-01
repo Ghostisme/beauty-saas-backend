@@ -39,5 +39,29 @@ public final class InventoryWorkflowRequests {
         @NotBlank @Pattern(regexp="DRAFT|CONFIRMED") String status,
         @Size(max=300) String remark,
         @NotEmpty @Size(max=100) List<@Valid DocumentLineSave> lines) {}
+    public record LiquidationLineSave(
+        @NotNull @Positive Long itemId,
+        @NotNull @DecimalMin(value="0.000") @Digits(integer=11, fraction=3) BigDecimal actualQuantity,
+        @Size(max=300) String remark) {}
+    public record LiquidationDocumentSave(
+        @NotNull @Positive Long departmentId,
+        @Size(max=80) String documentNo,
+        @NotNull LocalDate documentDate,
+        @Size(max=80) String operatorName,
+        @NotBlank @Pattern(regexp="DRAFT|CONFIRMED") String status,
+        @Size(max=300) String remark,
+        @NotNull Boolean syncInventory,
+        @NotEmpty @Size(max=500) List<@Valid LiquidationLineSave> lines) {}
+    public record InventorySettingsSave(
+        @NotNull Boolean preventOrderOnShortage,
+        @NotNull Boolean transferAutoConfirmEnabled,
+        @NotNull @Min(0) Integer transferAutoConfirmDays,
+        @NotNull Boolean stockAlertEnabled,
+        @NotNull @DecimalMin(value="0.000") @Digits(integer=11, fraction=3) BigDecimal stockAlertValue,
+        @NotNull Boolean expiryAlertEnabled,
+        @NotNull @Min(1) @Max(120) Integer expiryAlertMonths,
+        @NotNull Boolean salesDeductInventory,
+        @NotNull Boolean deleteProductSyncInventory,
+        @NotNull @Min(0) Long version) {}
     public record AccountQuery(int page, int pageSize, String keyword, String brand, String category, Long departmentId, String startDate, String endDate) {}
 }

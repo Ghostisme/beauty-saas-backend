@@ -212,4 +212,56 @@ class CatalogIntegrationTest {
         batches = data(call("GET", "/inventory/batches?departmentId=" + storeA + "&itemId=" + productA + "&page=1&pageSize=10", a.token(), null, null), 200);
         assertThat(batches.path("records").get(0).path("quantity").decimalValue()).isEqualByComparingTo("2.000");
     }
+
+    @Test
+    void liquidationDocumentsSnapshotCountsAndCanSynchronizeInventory() throws Exception {
+        data(call("POST", "/inventory/changes", a.token(), null,
+            Map.of("departmentId", storeA, "itemId", productA, "changeType", "IN", "quantity", new BigDecimal("5.000"),
+                "unitCost", new BigDecimal("70.00"), "referenceNo", "PO-STOCKTAKE")), 200);
+
+        var draftLine = Map.of("itemId", productA, "actualQuantity", BigDecimal.ZERO, "remark", "待复核");
+        var draft = new java.util.LinkedHashMap<String, Object>();
+        draft.put("departmentId", storeA); draft.put("documentDate", "2026-10-01"); draft.put("operatorName", "负责人");
+        draft.put("status", "DRAFT"); draft.put("syncInventory", true); draft.put("lines", List.of(draftLine));
+        assertThat(data(call("POST", "/inventory/liquidations", a.token(), null, draft), 200).asLong()).isPositive();
+        assertThat(data(call("GET", "/inventory?page=1&pageSize=10&itemId=" + productA, a.token(), null, null), 200)
+            .path("records").get(0).path("quantity").decimalValue()).isEqualByComparingTo("5.000");
+
+        var confirmedLine = Map.of("itemId", productA, "actualQuantity", new BigDecimal("2.500"), "remark", "复核后调整");
+        var confirmed = new java.util.LinkedHashMap<String, Object>();
+        confirmed.put("departmentId", storeA); confirmed.put("documentDate", "2026-10-01"); confirmed.put("operatorName", "负责人");
+        confirmed.put("status", "CONFIRMED"); confirmed.put("syncInventory", true); confirmed.put("lines", List.of(confirmedLine));
+        assertThat(data(call("POST", "/inventory/liquidations", a.token(), null, confirmed), 200).asLong()).isPositive();
+        var stock = data(call("GET", "/inventory?page=1&pageSize=10&itemId=" + productA, a.token(), null, null), 200);
+        var inventoryId = stock.path("records").get(0).path("id").asLong();
+        assertThat(stock.path("records").get(0).path("quantity").decimalValue()).isEqualByComparingTo("2.500");
+        var changes = data(call("GET", "/inventory/" + inventoryId + "/changes?page=1&pageSize=50", a.token(), null, null), 200);
+        assertThat(changes.path("records").findValuesAsText("changeType")).contains("ADJUST");
+    }
+
+    @Test
+    void inventorySettingsAreTenantScopedVersionedAndPersisted() throws Exception {
+        var defaults = data(call("GET", "/inventory/settings", a.token(), null, null), 200);
+        assertThat(defaults.path("preventOrderOnShortage").asBoolean()).isFalse();
+        assertThat(defaults.path("expiryAlertMonths").asInt()).isEqualTo(6);
+        var saved = data(call("PUT", "/inventory/settings", a.token(), null,
+            Map.of("preventOrderOnShortage", true, "transferAutoConfirmEnabled", true, "transferAutoConfirmDays", 3,
+                "stockAlertEnabled", true, "stockAlertValue", new BigDecimal("2.000"), "expiryAlertEnabled", true,
+                "expiryAlertMonths", 12, "salesDeductInventory", false, "deleteProductSyncInventory", true, "version", 0)), 200);
+        assertThat(saved.path("preventOrderOnShortage").asBoolean()).isTrue();
+        assertThat(saved.path("stockAlertValue").decimalValue()).isEqualByComparingTo("2.000");
+        assertThat(saved.path("version").asLong()).isEqualTo(0);
+        var stored = data(call("GET", "/inventory/settings", a.token(), null, null), 200);
+        assertThat(stored.path("salesDeductInventory").asBoolean()).isFalse();
+        var updated = data(call("PUT", "/inventory/settings", a.token(), null,
+            Map.of("preventOrderOnShortage", false, "transferAutoConfirmEnabled", false, "transferAutoConfirmDays", 0,
+                "stockAlertEnabled", false, "stockAlertValue", BigDecimal.ZERO, "expiryAlertEnabled", false,
+                "expiryAlertMonths", 6, "salesDeductInventory", true, "deleteProductSyncInventory", true, "version", 0)), 200);
+        assertThat(updated.path("version").asLong()).isEqualTo(1);
+        data(call("PUT", "/inventory/settings", a.token(), null,
+            Map.of("preventOrderOnShortage", true, "transferAutoConfirmEnabled", true, "transferAutoConfirmDays", 5,
+                "stockAlertEnabled", true, "stockAlertValue", new BigDecimal("3.000"), "expiryAlertEnabled", true,
+                "expiryAlertMonths", 12, "salesDeductInventory", false, "deleteProductSyncInventory", true, "version", 0)), 409);
+        assertThat(data(call("GET", "/inventory/settings", b.token(), null, null), 200).path("version").asLong()).isEqualTo(0);
+    }
 }
