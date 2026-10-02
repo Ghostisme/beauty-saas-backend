@@ -30,16 +30,16 @@ class OutOfOrderMigrationTest {
             .hasMessageContaining("not applied to database: 10");
 
         var withFix = Flyway.configure().dataSource(url, "sa", "").outOfOrder(true).load();
-        assertThat(withFix.migrate().migrationsExecuted).isEqualTo(3); // V10, V12, V13
+        assertThat(withFix.migrate().migrationsExecuted).isEqualTo(4); // V10, V12, V13, V14
         assertThat(withFix.migrate().migrationsExecuted).isZero();
 
         try (var connection = DriverManager.getConnection(url, "sa", "");
              var statement = connection.createStatement();
              var result = statement.executeQuery(
-                 "SELECT version, installed_rank, success FROM flyway_schema_history WHERE version IN ('10','11','12','13') ORDER BY installed_rank")) {
+                 "SELECT version, installed_rank, success FROM flyway_schema_history WHERE version IN ('10','11','12','13','14') ORDER BY installed_rank")) {
             assertThat(result.next()).isTrue();
             assertThat(result.getString("version")).isEqualTo("11");
-            for (String version : new String[] {"10", "12", "13"}) {
+            for (String version : new String[] {"10", "12", "13", "14"}) {
                 assertThat(result.next()).isTrue();
                 assertThat(result.getString("version")).isEqualTo(version);
                 assertThat(result.getBoolean("success")).isTrue();

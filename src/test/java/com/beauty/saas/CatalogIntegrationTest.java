@@ -174,6 +174,102 @@ class CatalogIntegrationTest {
     }
 
     @Test
+    void costAccountingSupportsWeightedAverageDetailsAndAdjustments() throws Exception {
+        data(call("POST", "/inventory/changes", a.token(), null,
+            Map.of("departmentId", storeA, "itemId", productA, "changeType", "IN", "quantity", new BigDecimal("10.000"),
+                "unitCost", new BigDecimal("70.00"), "referenceNo", "COST-PO-001")), 200);
+        data(call("POST", "/inventory/changes", a.token(), null,
+            Map.of("departmentId", storeA, "itemId", productA, "changeType", "OUT", "quantity", new BigDecimal("2.000"),
+                "unitCost", new BigDecimal("70.00"), "referenceNo", "COST-OUT-001")), 200);
+
+        var accounting = data(call("GET", "/inventory/cost-accounting?departmentId=" + storeA
+            + "&startDate=2026-01-01&endDate=2026-12-31&page=1&pageSize=10", a.token(), null, null), 200);
+        assertThat(accounting.path("total").asInt()).isEqualTo(1);
+        var row = accounting.path("records").get(0);
+        assertThat(row.path("openingQuantity").decimalValue()).isEqualByComparingTo("0.000");
+        assertThat(row.path("inboundQuantity").decimalValue()).isEqualByComparingTo("10.000");
+        assertThat(row.path("outboundQuantity").decimalValue()).isEqualByComparingTo("2.000");
+        assertThat(row.path("endingQuantity").decimalValue()).isEqualByComparingTo("8.000");
+        assertThat(row.path("endingUnitCost").decimalValue()).isEqualByComparingTo("70.00");
+
+        var inventoryId = row.path("id").asLong();
+        var details = data(call("GET", "/inventory/cost-accounting/" + inventoryId
+            + "/details?startDate=2026-01-01&endDate=2026-12-31&page=1&pageSize=10", a.token(), null, null), 200);
+        assertThat(details.path("total").asInt()).isEqualTo(2);
+        assertThat(details.path("records").findValuesAsText("type")).contains("入库", "出库");
+
+        data(call("POST", "/inventory/cost-adjustments", a.token(), null,
+            Map.of("departmentId", storeA, "operatorName", "负责人", "remark", "月末成本复核",
+                "lines", List.of(Map.of("itemId", productA, "unitCost", new BigDecimal("80.00"), "remark", "复核")))), 200);
+        var adjusted = data(call("GET", "/inventory/cost-accounting?departmentId=" + storeA
+            + "&startDate=2026-01-01&endDate=2026-12-31&page=1&pageSize=10", a.token(), null, null), 200);
+        assertThat(adjusted.path("records").get(0).path("endingUnitCost").decimalValue()).isEqualByComparingTo("80.00");
+        assertThat(data(call("GET", "/inventory/cost-adjustments?departmentId=" + storeA + "&page=1&pageSize=10", a.token(), null, null), 200)
+            .path("total").asInt()).isEqualTo(1);
+        assertThat(data(call("GET", "/inventory/cost-adjustments?keyword=护理精华&page=1&pageSize=10", a.token(), null, null), 200)
+            .path("total").asInt()).isEqualTo(1);
+
+        var secondProduct = data(call("POST", "/items?kind=PRODUCT", a.token(), null,
+            Map.of("code", "SKU-COST-2", "name", "核算面膜", "category", "护理", "price", new BigDecimal("60.00"),
+                "unit", "盒", "status", 1)), 200).asLong();
+        data(call("POST", "/inventory/changes", a.token(), null,
+            Map.of("departmentId", storeA, "itemId", secondProduct, "changeType", "IN", "quantity", new BigDecimal("2.000"),
+                "unitCost", new BigDecimal("30.00"), "referenceNo", "COST-PO-002")), 200);
+        var paged = data(call("GET", "/inventory/cost-accounting?departmentId=" + storeA
+            + "&startDate=2026-01-01&endDate=2026-12-31&page=1&pageSize=1", a.token(), null, null), 200);
+        assertThat(paged.path("total").asInt()).isEqualTo(2);
+        assertThat(paged.path("records").size()).isEqualTo(1);
+        assertThat(paged.path("summary").path("endingCost").decimalValue()).isEqualByComparingTo("700.00");
+    }
+
+    @Test
+    void transferInboundCreatesPendingDocumentWithLinesAndSupportsDetailAndRevoke() throws Exception {
+        var targetStore = data(call("POST", "/iam/departments", root, a.id(),
+            Map.of("name", "调入门店", "code", "TRANSFER_TARGET", "type", "STORE", "sortOrder", 1, "status", 1)), 200).asLong();
+        var transfer = Map.of(
+            "docType", "TRANSFER_IN", "sourceDepartmentId", storeA, "targetDepartmentId", targetStore,
+            "documentDate", LocalDate.now().toString(), "operatorName", "负责人", "status", "PENDING",
+            "lines", List.of(Map.of("itemId", productA, "quantity", new BigDecimal("1.000"), "unitCost", new BigDecimal("1314.00"))));
+        var documentId = data(call("POST", "/inventory/transfers", a.token(), null, transfer), 200).asLong();
+        assertThat(documentId).isPositive();
+        var documents = data(call("GET", "/inventory/documents?docType=TRANSFER_IN&status=PENDING&sourceDepartmentId="
+            + storeA + "&targetDepartmentId=" + targetStore + "&page=1&pageSize=10", a.token(), null, null), 200);
+        assertThat(documents.path("total").asInt()).isEqualTo(1);
+        assertThat(documents.path("records").get(0).path("documentNo").asText()).startsWith("DB-");
+        var detail = data(call("GET", "/inventory/documents/" + documentId, a.token(), null, null), 200);
+        assertThat(detail.path("status").asText()).isEqualTo("PENDING");
+        assertThat(detail.path("lines").size()).isEqualTo(1);
+        assertThat(detail.path("lines").get(0).path("unitCost").decimalValue()).isEqualByComparingTo("1314.00");
+        assertThat(data(call("GET", "/inventory?itemId=" + productA + "&departmentId=" + storeA,
+            a.token(), null, null), 200).path("total").asInt()).isZero();
+        data(call("GET", "/inventory/documents/" + documentId, b.token(), null, null), 404);
+        data(call("POST", "/inventory/documents/" + documentId + "/revoke", a.token(), null, null), 200);
+        var cancelled = data(call("GET", "/inventory/documents/" + documentId, a.token(), null, null), 200);
+        assertThat(cancelled.path("status").asText()).isEqualTo("CANCELLED");
+    }
+
+    @Test
+    void transferInboundCanBeAcceptedAndMovesStockBetweenStores() throws Exception {
+        var targetStore = data(call("POST", "/iam/departments", root, a.id(),
+            Map.of("name", "收货门店", "code", "TRANSFER_RECEIVE", "type", "STORE", "sortOrder", 1, "status", 1)), 200).asLong();
+        data(call("POST", "/inventory/changes", a.token(), null,
+            Map.of("departmentId", storeA, "itemId", productA, "changeType", "IN", "quantity", new BigDecimal("5.000"),
+                "unitCost", new BigDecimal("1314.00"), "referenceNo", "TRANSFER-SEED")), 200);
+        var transfer = Map.of(
+            "docType", "TRANSFER_IN", "sourceDepartmentId", storeA, "targetDepartmentId", targetStore,
+            "documentDate", LocalDate.now().toString(), "operatorName", "负责人", "status", "PENDING",
+            "lines", List.of(Map.of("itemId", productA, "quantity", new BigDecimal("2.000"), "unitCost", new BigDecimal("1314.00"))));
+        var documentId = data(call("POST", "/inventory/transfers", a.token(), null, transfer), 200).asLong();
+
+        data(call("POST", "/inventory/documents/" + documentId + "/accept", a.token(), null, null), 200);
+        assertThat(data(call("GET", "/inventory/documents/" + documentId, a.token(), null, null), 200).path("status").asText()).isEqualTo("CONFIRMED");
+        assertThat(data(call("GET", "/inventory?itemId=" + productA + "&departmentId=" + storeA, a.token(), null, null), 200)
+            .path("records").get(0).path("quantity").decimalValue()).isEqualByComparingTo("3.000");
+        assertThat(data(call("GET", "/inventory?itemId=" + productA + "&departmentId=" + targetStore, a.token(), null, null), 200)
+            .path("records").get(0).path("quantity").decimalValue()).isEqualByComparingTo("2.000");
+    }
+
+    @Test
     void movementDocumentsApplyMultipleLinesAndExposeStockDetails() throws Exception {
         var secondProduct = data(call("POST", "/items?kind=PRODUCT", a.token(), null,
             Map.of("code", "SKU-002", "name", "护理面膜", "category", "护理", "price", new BigDecimal("50.00"),

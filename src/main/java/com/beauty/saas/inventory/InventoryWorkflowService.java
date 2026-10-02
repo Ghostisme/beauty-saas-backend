@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import static com.beauty.saas.iam.IamRepository.*;
 
@@ -69,11 +70,15 @@ public class InventoryWorkflowService {
         if (query.sourceDepartmentId() != null) { department(actor, "inventory:read", query.sourceDepartmentId()); where.append(" AND d.source_department_id=?"); args.add(query.sourceDepartmentId()); }
         else where.append(scope(actor, "inventory:read", "COALESCE(d.source_department_id,d.target_department_id)", args));
         if (query.targetDepartmentId() != null) { department(actor, "inventory:read", query.targetDepartmentId()); where.append(" AND d.target_department_id=?"); args.add(query.targetDepartmentId()); }
-        if (query.startDate() != null) { where.append(" AND d.document_date>=?"); args.add(query.startDate()); }
-        if (query.endDate() != null) { where.append(" AND d.document_date<=?"); args.add(query.endDate()); }
+        if (query.transferStartDate() != null) { where.append(" AND d.status='CONFIRMED' AND d.document_date>=?"); args.add(query.transferStartDate()); }
+        else if (query.startDate() != null) { where.append(" AND d.document_date>=?"); args.add(query.startDate()); }
+        if (query.transferEndDate() != null) { where.append(" AND d.status='CONFIRMED' AND d.document_date<=?"); args.add(query.transferEndDate()); }
+        else if (query.endDate() != null) { where.append(" AND d.document_date<=?"); args.add(query.endDate()); }
+        if (query.applyStartDate() != null) { where.append(" AND d.create_time>=?"); args.add(query.applyStartDate().atStartOfDay()); }
+        if (query.applyEndDate() != null) { where.append(" AND d.create_time<?"); args.add(query.applyEndDate().plusDays(1).atStartOfDay()); }
         var search = keyword(query.keyword()); where.append(" AND (LOWER(d.document_no) LIKE ? ESCAPE '!' OR LOWER(COALESCE(d.remark,'')) LIKE ? ESCAPE '!')"); args.add(search); args.add(search);
         var total = repo.count("SELECT COUNT(*) FROM biz_inventory_doc d" + where, args.toArray()); args.add(query.pageSize()); args.add((query.page() - 1) * query.pageSize());
-        var rows = repo.rows("SELECT d.*,s.name source_department_name,t.name target_department_name,COALESCE(u.nickname,u.username) creator_name FROM biz_inventory_doc d LEFT JOIN sys_department s ON s.tenant_id=d.tenant_id AND s.id=d.source_department_id LEFT JOIN sys_department t ON t.tenant_id=d.tenant_id AND t.id=d.target_department_id LEFT JOIN sys_user u ON u.tenant_id=d.tenant_id AND u.id=d.creator_id" + where + " ORDER BY d.document_date DESC,d.id DESC LIMIT ? OFFSET ?", args.toArray());
+        var rows = repo.rows("SELECT d.*,d.create_time application_time,CASE WHEN d.status='CONFIRMED' THEN d.document_date END transfer_date,s.name source_department_name,t.name target_department_name,COALESCE(u.nickname,u.username) creator_name FROM biz_inventory_doc d LEFT JOIN sys_department s ON s.tenant_id=d.tenant_id AND s.id=d.source_department_id LEFT JOIN sys_department t ON t.tenant_id=d.tenant_id AND t.id=d.target_department_id LEFT JOIN sys_user u ON u.tenant_id=d.tenant_id AND u.id=d.creator_id" + where + " ORDER BY d.document_date DESC,d.id DESC LIMIT ? OFFSET ?", args.toArray());
         return new Page<>(rows, total, query.page(), query.pageSize());
     }
 
@@ -88,6 +93,100 @@ public class InventoryWorkflowService {
         return repo.insert("INSERT INTO biz_inventory_doc(tenant_id,doc_type,document_no,source_department_id,target_department_id,document_date,operator_name,status,remark,creator_id) VALUES(?,?,?,?,?,?,?,?,?,?)", actor.tenantId(), input.docType(), number, input.sourceDepartmentId(), input.targetDepartmentId(), input.documentDate(), blank(input.operatorName()), input.status(), blank(input.remark()), actor.userId());
     }
 
+    @Transactional public long saveTransferDocument(TransferDocumentSave input) {
+        var actor = write();
+        department(actor, "inventory:write", input.sourceDepartmentId());
+        department(actor, "inventory:write", input.targetDepartmentId());
+        if (Objects.equals(input.sourceDepartmentId(), input.targetDepartmentId())) throw new ApiException(400, "调出仓库和调入仓库不能相同");
+        var number = blank(input.documentNo());
+        if (number == null) number = nextTransferNumber(actor.tenantId(), input.docType(), input.documentDate());
+        if (repo.one("SELECT id FROM biz_inventory_doc WHERE tenant_id=? AND document_no=?", actor.tenantId(), number) != null) throw new ApiException(409, "单据号已存在");
+        var documentId = repo.insert("INSERT INTO biz_inventory_doc(tenant_id,doc_type,document_no,source_department_id,target_department_id,document_date,operator_name,status,remark,creator_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            actor.tenantId(), input.docType(), number, input.sourceDepartmentId(), input.targetDepartmentId(), input.documentDate(), blank(input.operatorName()), input.status(), blank(input.remark()), actor.userId());
+        for (var line : input.lines()) {
+            var item = repo.one("SELECT id FROM biz_item WHERE tenant_id=? AND id=? AND kind='PRODUCT' AND status=1", actor.tenantId(), line.itemId());
+            if (item == null) throw new ApiException(400, "单据包含不存在或已停用的产品");
+            repo.insert("INSERT INTO biz_inventory_doc_line(tenant_id,document_id,department_id,item_id,quantity,unit_cost,remark) VALUES(?,?,?,?,?,?,?)",
+                actor.tenantId(), documentId, input.sourceDepartmentId(), line.itemId(), line.quantity(), line.unitCost(), blank(line.remark()));
+            if ("CONFIRMED".equals(input.status())) {
+                applyMovement(actor, input.sourceDepartmentId(), line.itemId(), "OUT", line.quantity(), line.unitCost(), number, line.remark());
+                applyMovement(actor, input.targetDepartmentId(), line.itemId(), "IN", line.quantity(), line.unitCost(), number, line.remark());
+            }
+        }
+        return documentId;
+    }
+
+    private String nextTransferNumber(long tenantId, String docType, LocalDate documentDate) {
+        var prefix = ("TRANSFER_OUT".equals(docType) ? "DO-" : "DB-") + documentDate.format(DateTimeFormatter.BASIC_ISO_DATE);
+        var sequence = repo.count("SELECT COUNT(*) FROM biz_inventory_doc WHERE tenant_id=? AND document_no LIKE ?", tenantId, prefix + "%") + 1;
+        var number = String.format(Locale.ROOT, "%s%04d", prefix, sequence);
+        while (repo.one("SELECT id FROM biz_inventory_doc WHERE tenant_id=? AND document_no=?", tenantId, number) != null) {
+            number = String.format(Locale.ROOT, "%s%04d", prefix, ++sequence);
+        }
+        return number;
+    }
+
+    public Map<String,Object> documentDetail(long documentId) {
+        var actor = actor("inventory:read");
+        var document = repo.one("SELECT d.*,s.name source_department_name,t.name target_department_name,COALESCE(u.nickname,u.username) creator_name FROM biz_inventory_doc d LEFT JOIN sys_department s ON s.tenant_id=d.tenant_id AND s.id=d.source_department_id LEFT JOIN sys_department t ON t.tenant_id=d.tenant_id AND t.id=d.target_department_id LEFT JOIN sys_user u ON u.tenant_id=d.tenant_id AND u.id=d.creator_id WHERE d.tenant_id=? AND d.id=?", actor.tenantId(), documentId);
+        if (document == null) throw new ApiException(404, "调拨单不存在");
+        var departmentId = document.get("sourceDepartmentId") != null ? id(document, "sourceDepartmentId") : document.get("targetDepartmentId") == null ? 0 : id(document, "targetDepartmentId");
+        if (departmentId > 0) actor.requireDepartment("inventory:read", departmentId);
+        var lines = repo.rows("SELECT l.id,l.item_id,x.code item_code,x.name item_name,x.brand,x.category,x.unit,x.spec,l.quantity,l.unit_cost,l.remark,COALESCE(i.quantity,0) current_quantity FROM biz_inventory_doc_line l JOIN biz_item x ON x.tenant_id=l.tenant_id AND x.id=l.item_id LEFT JOIN biz_inventory i ON i.tenant_id=l.tenant_id AND i.department_id=l.department_id AND i.item_id=l.item_id WHERE l.tenant_id=? AND l.document_id=? ORDER BY l.id", actor.tenantId(), documentId);
+        document.put("lines", lines);
+        return document;
+    }
+
+    @Transactional public void revokeDocument(long documentId) {
+        var actor = write();
+        var document = repo.one("SELECT doc_type,source_department_id,target_department_id,status FROM biz_inventory_doc WHERE tenant_id=? AND id=? FOR UPDATE", actor.tenantId(), documentId);
+        if (document == null) throw new ApiException(404, "调拨单不存在");
+        if (!("TRANSFER_IN".equals(text(document, "docType")) || "TRANSFER_OUT".equals(text(document, "docType")))) throw new ApiException(400, "只能撤销调拨单");
+        var source = document.get("sourceDepartmentId");
+        var target = document.get("targetDepartmentId");
+        if (source != null) actor.requireDepartment("inventory:write", id(document, "sourceDepartmentId"));
+        if (target != null) actor.requireDepartment("inventory:write", id(document, "targetDepartmentId"));
+        var status = text(document, "status");
+        if (!("DRAFT".equals(status) || "PENDING".equals(status))) throw new ApiException(409, "只有草稿或待审批调拨单可以撤销");
+        repo.update("UPDATE biz_inventory_doc SET status='CANCELLED',update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?", actor.tenantId(), documentId);
+    }
+
+    /** Confirms an inbound transfer after the receiving store accepts the shipment. */
+    @Transactional public void acceptTransferInbound(long documentId) {
+        var actor = write();
+        var document = repo.one("SELECT doc_type,source_department_id,target_department_id,status,document_no FROM biz_inventory_doc WHERE tenant_id=? AND id=? FOR UPDATE", actor.tenantId(), documentId);
+        if (document == null) throw new ApiException(404, "调拨单不存在");
+        if (!"TRANSFER_IN".equals(text(document, "docType"))) throw new ApiException(400, "只能确认调拨入库单");
+        var source = id(document, "sourceDepartmentId");
+        var target = id(document, "targetDepartmentId");
+        actor.requireDepartment("inventory:write", source);
+        actor.requireDepartment("inventory:write", target);
+        if (!"PENDING".equals(text(document, "status"))) throw new ApiException(409, "只有出库中的调拨入库单可以确认收货");
+        var number = text(document, "documentNo");
+        var lines = repo.rows("SELECT item_id,quantity,unit_cost,remark FROM biz_inventory_doc_line WHERE tenant_id=? AND document_id=? ORDER BY id FOR UPDATE", actor.tenantId(), documentId);
+        if (lines.isEmpty()) throw new ApiException(409, "调拨单没有产品明细");
+        for (var line : lines) {
+            var itemId = id(line, "itemId");
+            var quantity = new BigDecimal(Objects.toString(line.get("quantity"), "0"));
+            var unitCost = new BigDecimal(Objects.toString(line.get("unitCost"), "0"));
+            var remark = text(line, "remark");
+            applyMovement(actor, source, itemId, "OUT", quantity, unitCost, number, remark);
+            applyMovement(actor, target, itemId, "IN", quantity, unitCost, number, remark);
+        }
+        repo.update("UPDATE biz_inventory_doc SET status='CONFIRMED',update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?", actor.tenantId(), documentId);
+    }
+
+    /** Rejects an inbound transfer while it is still in transit. */
+    @Transactional public void rejectTransferInbound(long documentId) {
+        var actor = write();
+        var document = repo.one("SELECT doc_type,source_department_id,target_department_id,status FROM biz_inventory_doc WHERE tenant_id=? AND id=? FOR UPDATE", actor.tenantId(), documentId);
+        if (document == null) throw new ApiException(404, "调拨单不存在");
+        if (!"TRANSFER_IN".equals(text(document, "docType"))) throw new ApiException(400, "只能拒收调拨入库单");
+        actor.requireDepartment("inventory:write", id(document, "targetDepartmentId"));
+        if (!"PENDING".equals(text(document, "status"))) throw new ApiException(409, "只有出库中的调拨入库单可以拒收");
+        repo.update("UPDATE biz_inventory_doc SET status='CANCELLED',update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?", actor.tenantId(), documentId);
+    }
+
     /** Returns the real ledger rows behind the stock-row "库存明细" action. */
     public Page<Map<String,Object>> inventoryChangesFor(long inventoryId, int page, int pageSize, LocalDate startDate, LocalDate endDate) {
         var actor = actor("inventory:read"); page(page, pageSize);
@@ -95,16 +194,16 @@ public class InventoryWorkflowService {
         if (inventory == null) throw new ApiException(404, "库存记录不存在");
         actor.requireDepartment("inventory:read", id(inventory, "departmentId"));
         var args = new ArrayList<Object>(List.of(actor.tenantId(), inventoryId));
-        var dateFilter = dateWhere("create_time", startDate, endDate);
-        var rowDateFilter = dateWhere("c.create_time", startDate, endDate);
+        var rowDateFilter = documentAwareDateWhere("doc.id", "doc.document_date", "c.create_time", startDate, endDate);
         var countArgs = new ArrayList<Object>(args);
-        countArgs.addAll(List.of(dateArgs(startDate, endDate)));
-        var total = repo.count("SELECT COUNT(*) FROM biz_inventory_change WHERE tenant_id=? AND inventory_id=?" + dateFilter, countArgs.toArray());
-        args.addAll(List.of(dateArgs(startDate, endDate)));
+        countArgs.addAll(List.of(documentAwareDateArgs(startDate, endDate)));
+        var total = repo.count("SELECT COUNT(*) FROM biz_inventory_change c LEFT JOIN biz_inventory_doc doc ON doc.tenant_id=c.tenant_id AND doc.document_no=c.reference_no WHERE c.tenant_id=? AND c.inventory_id=?" + rowDateFilter, countArgs.toArray());
+        args.addAll(List.of(documentAwareDateArgs(startDate, endDate)));
         args.add(pageSize); args.add((page - 1) * pageSize);
         var rows = repo.rows("SELECT c.*,d.name department_name,x.code item_code,x.name item_name,x.brand,x.category,x.unit,x.spec "
             + "FROM biz_inventory_change c JOIN sys_department d ON d.tenant_id=c.tenant_id AND d.id=c.department_id "
             + "JOIN biz_item x ON x.tenant_id=c.tenant_id AND x.id=c.item_id "
+            + "LEFT JOIN biz_inventory_doc doc ON doc.tenant_id=c.tenant_id AND doc.document_no=c.reference_no "
             + "WHERE c.tenant_id=? AND c.inventory_id=?" + rowDateFilter + " ORDER BY c.create_time DESC,c.id DESC LIMIT ? OFFSET ?", args.toArray());
         return new Page<>(rows, total, page, pageSize);
     }
@@ -323,5 +422,17 @@ public class InventoryWorkflowService {
     private static LocalDate parse(String value) { try { return value == null || value.isBlank() ? null : LocalDate.parse(value); } catch (Exception e) { throw new ApiException(400, "日期格式不正确"); } }
     private static String dateWhere(String column, LocalDate start, LocalDate end) { var sql = ""; if (start != null) sql += " AND " + column + ">=?"; if (end != null) sql += " AND " + column + "<?"; return sql; }
     private static Object[] dateArgs(LocalDate start, LocalDate end) { var list = new ArrayList<Object>(); if (start != null) list.add(start.atStartOfDay()); if (end != null) list.add(end.plusDays(1).atStartOfDay()); return list.toArray(); }
+    private static String documentAwareDateWhere(String documentIdColumn, String documentDateColumn, String createTimeColumn, LocalDate start, LocalDate end) {
+        var sql = "";
+        if (start != null) sql += " AND ((" + documentIdColumn + " IS NOT NULL AND " + documentDateColumn + ">=?) OR (" + documentIdColumn + " IS NULL AND " + createTimeColumn + ">=?))";
+        if (end != null) sql += " AND ((" + documentIdColumn + " IS NOT NULL AND " + documentDateColumn + "<?) OR (" + documentIdColumn + " IS NULL AND " + createTimeColumn + "<?))";
+        return sql;
+    }
+    private static Object[] documentAwareDateArgs(LocalDate start, LocalDate end) {
+        var list = new ArrayList<Object>();
+        if (start != null) { list.add(start); list.add(start.atStartOfDay()); }
+        if (end != null) { list.add(end.plusDays(1)); list.add(end.plusDays(1).atStartOfDay()); }
+        return list.toArray();
+    }
     private static Object[] concat(Object first, Object second, Object[] rest) { var result = new Object[rest.length + 2]; result[0] = first; result[1] = second; System.arraycopy(rest, 0, result, 2, rest.length); return result; }
 }

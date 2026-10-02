@@ -23,7 +23,8 @@ public final class InventoryWorkflowRequests {
         @NotNull LocalDate documentDate, @Size(max=80) String operatorName,
         @NotBlank @Pattern(regexp="DRAFT|PENDING|CONFIRMED|CANCELLED") String status,
         @Size(max=300) String remark) {}
-    public record DocumentQuery(int page, int pageSize, String docType, String keyword, Long sourceDepartmentId, Long targetDepartmentId, String status, LocalDate startDate, LocalDate endDate) {}
+    public record DocumentQuery(int page, int pageSize, String docType, String keyword, Long sourceDepartmentId, Long targetDepartmentId, String status, LocalDate startDate, LocalDate endDate,
+                                LocalDate transferStartDate, LocalDate transferEndDate, LocalDate applyStartDate, LocalDate applyEndDate) {}
     public record DocumentLineSave(
         @NotNull @Positive Long itemId,
         @NotNull @DecimalMin(value="0.001") @Digits(integer=11, fraction=3) BigDecimal quantity,
@@ -39,6 +40,21 @@ public final class InventoryWorkflowRequests {
         @NotBlank @Pattern(regexp="DRAFT|CONFIRMED") String status,
         @Size(max=300) String remark,
         @NotEmpty @Size(max=100) List<@Valid DocumentLineSave> lines) {}
+    public record TransferLineSave(
+        @NotNull @Positive Long itemId,
+        @NotNull @DecimalMin(value="0.001") @Digits(integer=11, fraction=3) BigDecimal quantity,
+        @NotNull @DecimalMin(value="0.00") @Digits(integer=12, fraction=2) BigDecimal unitCost,
+        @Size(max=300) String remark) {}
+    public record TransferDocumentSave(
+        @NotBlank @Pattern(regexp="TRANSFER_IN|TRANSFER_OUT") String docType,
+        @Size(max=80) String documentNo,
+        @NotNull @Positive Long sourceDepartmentId,
+        @NotNull @Positive Long targetDepartmentId,
+        @NotNull LocalDate documentDate,
+        @Size(max=80) String operatorName,
+        @NotBlank @Pattern(regexp="DRAFT|PENDING|CONFIRMED") String status,
+        @Size(max=300) String remark,
+        @NotEmpty @Size(max=100) List<@Valid TransferLineSave> lines) {}
     public record LiquidationLineSave(
         @NotNull @Positive Long itemId,
         @NotNull @DecimalMin(value="0.000") @Digits(integer=11, fraction=3) BigDecimal actualQuantity,
