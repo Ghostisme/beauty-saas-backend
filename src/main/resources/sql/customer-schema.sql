@@ -43,8 +43,19 @@ CREATE TABLE IF NOT EXISTS biz_customer_storage (
     item_name VARCHAR(150) NOT NULL,
     quantity DECIMAL(14,3) NOT NULL DEFAULT 1,
     remark VARCHAR(300),
+    batch_id VARCHAR(64),
+    item_id BIGINT,
+    item_code VARCHAR(64),
+    item_category VARCHAR(100),
+    operator_id BIGINT,
+    operator_name VARCHAR(80),
+    operation_type VARCHAR(20) NOT NULL DEFAULT 'CREATE',
+    revoked TINYINT NOT NULL DEFAULT 0,
+    revoke_time TIMESTAMP,
+    revoked_by BIGINT,
     create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_customer_storage (tenant_id,customer_id,create_time,id),
+    INDEX idx_customer_storage_batch (tenant_id,batch_id,revoked),
     CHECK (storage_type IN ('PRODUCT','PROJECT')),
-    CHECK (quantity > 0)
+    CHECK (quantity >= 0)
 );

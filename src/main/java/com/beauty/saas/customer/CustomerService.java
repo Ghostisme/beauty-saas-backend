@@ -81,6 +81,7 @@ public class CustomerService {
         applyScope(actor, null, where, args);
         var row = repo.one("SELECT " + COLUMNS + CUSTOMER_FROM + where, args.toArray());
         if (row == null) throw new ApiException(404, "顾客不存在或不在可访问范围内");
+        row.put("storageCount", repo.count("SELECT COUNT(*) FROM biz_customer_storage s WHERE s.tenant_id=? AND s.customer_id=? AND s.revoked=0", row.get("tenantId"), id));
         return row;
     }
 
@@ -122,7 +123,7 @@ public class CustomerService {
         var actor = reader();
         page(query.page(), query.pageSize());
         var args = new ArrayList<Object>();
-        var where = new StringBuilder(" WHERE c.deleted=0");
+        var where = new StringBuilder(" WHERE c.deleted=0 AND s.revoked=0");
         if (actor.tenantId() > 0) { where.append(" AND s.tenant_id=?"); args.add(actor.tenantId()); }
         if (!actor.global("customers:read")) {
             var allowed = actor.scopes().getOrDefault("customers:read", Set.of()).stream().filter(value -> value > 0).toList();
@@ -133,14 +134,78 @@ public class CustomerService {
         if (query.storageType() != null && !query.storageType().isBlank()) { where.append(" AND s.storage_type=?"); args.add(query.storageType().trim()); }
         if (query.keyword() != null && !query.keyword().isBlank()) {
             var value = keyword(query.keyword());
-            where.append(" AND (LOWER(c.name) LIKE ? ESCAPE '!' OR c.phone LIKE ? ESCAPE '!' OR LOWER(c.code) LIKE ? ESCAPE '!' OR LOWER(s.item_name) LIKE ? ESCAPE '!')");
-            args.add(value); args.add(value); args.add(value); args.add(value);
+            where.append(" AND (LOWER(c.name) LIKE ? ESCAPE '!' OR c.phone LIKE ? ESCAPE '!' OR LOWER(c.code) LIKE ? ESCAPE '!' OR LOWER(s.item_name) LIKE ? ESCAPE '!' OR LOWER(COALESCE(s.item_code,'')) LIKE ? ESCAPE '!')");
+            args.add(value); args.add(value); args.add(value); args.add(value); args.add(value);
         }
         var from = " FROM biz_customer_storage s JOIN biz_customer c ON c.tenant_id=s.tenant_id AND c.id=s.customer_id JOIN sys_tenant t ON t.id=s.tenant_id LEFT JOIN sys_department d ON d.tenant_id=s.tenant_id AND d.id=s.store_id";
         var total = repo.count("SELECT COUNT(*)" + from + where, args.toArray());
         args.add(query.pageSize()); args.add((query.page() - 1) * query.pageSize());
-        var rows = repo.rows("SELECT s.id,s.tenant_id,t.name tenant_name,s.customer_id,c.name customer_name,c.phone,c.code customer_code,s.store_id,COALESCE(d.name,'当前门店') store_name,s.storage_type,s.item_name,s.quantity,s.remark,s.create_time" + from + where + " ORDER BY s.create_time DESC,s.id DESC LIMIT ? OFFSET ?", args.toArray());
+        var rows = repo.rows("SELECT s.id,s.batch_id,s.tenant_id,t.name tenant_name,s.customer_id,c.name customer_name,c.phone,c.code customer_code,s.store_id,COALESCE(d.name,'当前门店') store_name,s.storage_type,s.item_id,s.item_code,s.item_category,s.item_name,s.quantity,s.remark,s.operator_id,s.operator_name,s.operation_type,s.create_time,s.revoke_time" + from + where + " ORDER BY s.create_time DESC,s.id DESC LIMIT ? OFFSET ?", args.toArray());
         return new Page<>(rows, total, query.page(), query.pageSize());
+    }
+
+    public Map<String, Object> storageDetail(String batchId) {
+        var actor = reader();
+        var normalized = text(batchId);
+        if (normalized == null || normalized.length() > 64) throw new ApiException(400, "寄存批次参数不正确");
+        var args = new ArrayList<Object>(List.of(normalized));
+        var where = new StringBuilder(" WHERE s.batch_id=? AND c.deleted=0");
+        if (actor.tenantId() > 0) { where.append(" AND s.tenant_id=?"); args.add(actor.tenantId()); }
+        applyStorageScope(actor, where, args);
+        var from = " FROM biz_customer_storage s JOIN biz_customer c ON c.tenant_id=s.tenant_id AND c.id=s.customer_id LEFT JOIN sys_department d ON d.tenant_id=s.tenant_id AND d.id=s.store_id LEFT JOIN sys_user u ON u.tenant_id=s.tenant_id AND u.id=s.operator_id";
+        var rows = repo.rows("SELECT s.id,s.batch_id,s.customer_id,c.name customer_name,c.phone,c.code customer_code,s.store_id,COALESCE(d.name,'当前门店') store_name,s.storage_type,s.item_id,s.item_code,s.item_category,s.item_name,s.quantity,s.remark,s.operator_id,COALESCE(s.operator_name,u.nickname,u.username,'负责人') operator_name,s.operation_type,s.revoked,s.create_time,s.revoke_time" + from + where + " ORDER BY s.id", args.toArray());
+        if (rows.isEmpty()) throw new ApiException(404, "寄存记录不存在或已撤销");
+        var result = new LinkedHashMap<String, Object>();
+        result.put("batchId", normalized);
+        result.put("customerId", rows.get(0).get("customerId"));
+        result.put("customerName", rows.get(0).get("customerName"));
+        result.put("phone", rows.get(0).get("phone"));
+        result.put("customerCode", rows.get(0).get("customerCode"));
+        result.put("storeId", rows.get(0).get("storeId"));
+        result.put("storeName", rows.get(0).get("storeName"));
+        result.put("operatorName", rows.get(0).get("operatorName"));
+        result.put("createTime", rows.get(0).get("createTime"));
+        result.put("remark", rows.get(0).get("remark"));
+        result.put("items", rows);
+        return result;
+    }
+
+    public Page<Map<String, Object>> customerStorages(long customerId, int pageNumber, int pageSize) {
+        var actor = reader();
+        page(pageNumber, pageSize);
+        var args = new ArrayList<Object>(List.of(customerId));
+        var where = new StringBuilder(" WHERE s.customer_id=? AND s.revoked=0 AND c.deleted=0");
+        if (actor.tenantId() > 0) { where.append(" AND s.tenant_id=?"); args.add(actor.tenantId()); }
+        applyStorageScope(actor, where, args);
+        var from = " FROM biz_customer_storage s JOIN biz_customer c ON c.tenant_id=s.tenant_id AND c.id=s.customer_id LEFT JOIN sys_department d ON d.tenant_id=s.tenant_id AND d.id=s.store_id";
+        var total = repo.count("SELECT COUNT(*)" + from + where, args.toArray());
+        args.add(pageSize); args.add((pageNumber - 1) * pageSize);
+        var rows = repo.rows("SELECT s.id,s.batch_id,s.customer_id,c.name customer_name,c.phone,c.code customer_code,COALESCE(d.name,'当前门店') store_name,s.store_id,s.storage_type,s.item_id,s.item_code,s.item_category,s.item_name,s.quantity,s.remark,s.create_time" + from + where + " ORDER BY s.create_time DESC,s.id DESC LIMIT ? OFFSET ?", args.toArray());
+        return new Page<>(rows, total, pageNumber, pageSize);
+    }
+
+    @Transactional
+    public void revokeStorage(String batchId) {
+        var actor = writer();
+        var normalized = text(batchId);
+        if (normalized == null || normalized.length() > 64) throw new ApiException(400, "寄存批次参数不正确");
+        var row = repo.one("SELECT store_id,customer_id FROM biz_customer_storage WHERE tenant_id=? AND batch_id=? AND revoked=0 ORDER BY id LIMIT 1 FOR UPDATE", actor.tenantId(), normalized);
+        if (row == null) throw new ApiException(404, "寄存记录不存在或已撤销");
+        if (row.get("storeId") != null) actor.requireDepartment("customers:write", id(row, "storeId"));
+        var changed = repo.update("UPDATE biz_customer_storage SET revoked=1,operation_type='REVOKE',revoke_time=CURRENT_TIMESTAMP,revoked_by=? WHERE tenant_id=? AND batch_id=? AND revoked=0", actor.userId(), actor.tenantId(), normalized);
+        if (changed == 0) throw new ApiException(404, "寄存记录不存在或已撤销");
+    }
+
+    @Transactional
+    public void claimStorage(long lineId, StorageClaim input) {
+        var actor = writer();
+        var row = repo.one("SELECT customer_id,store_id,quantity FROM biz_customer_storage WHERE tenant_id=? AND id=? AND revoked=0 FOR UPDATE", actor.tenantId(), lineId);
+        if (row == null) throw new ApiException(404, "寄存品项不存在或已领取");
+        if (row.get("storeId") != null) actor.requireDepartment("customers:write", id(row, "storeId"));
+        var current = new BigDecimal(Objects.toString(row.get("quantity"), "0"));
+        if (input.quantity().compareTo(current) > 0) throw new ApiException(409, "领取数量不能超过寄存余量");
+        var next = current.subtract(input.quantity());
+        repo.update("UPDATE biz_customer_storage SET quantity=?,operation_type='CLAIM',revoked=?,revoke_time=CASE WHEN ?=1 THEN CURRENT_TIMESTAMP ELSE revoke_time END,revoked_by=CASE WHEN ?=1 THEN ? ELSE revoked_by END WHERE tenant_id=? AND id=?", next, next.signum() == 0 ? 1 : 0, next.signum() == 0 ? 1 : 0, next.signum() == 0 ? 1 : 0, actor.userId(), actor.tenantId(), lineId);
     }
 
     @Transactional
@@ -154,7 +219,44 @@ public class CustomerService {
         var store = repo.one("SELECT id FROM sys_department WHERE tenant_id=? AND id=? AND type='STORE' AND status=1", actor.tenantId(), requestedStoreId);
         if (store == null) throw new ApiException(404, "门店不存在或已停用");
         actor.requireDepartment("customers:write", requestedStoreId);
-        return repo.insert("INSERT INTO biz_customer_storage(tenant_id,customer_id,store_id,storage_type,item_name,quantity,remark) VALUES(?,?,?,?,?,?,?)", actor.tenantId(), input.customerId(), requestedStoreId, input.storageType(), input.itemName().trim(), input.quantity(), text(input.remark()));
+        var operator = repo.one("SELECT COALESCE(nickname,username) operator_name FROM sys_user WHERE tenant_id=? AND id=? AND deleted=0", actor.tenantId(), actor.userId());
+        var operatorName = operator == null ? "负责人" : Objects.toString(operator.get("operatorName"), "负责人");
+        var batchId = UUID.randomUUID().toString().replace("-", "");
+        var lines = new ArrayList<StorageItemSave>();
+        if (input.items() != null) lines.addAll(input.items());
+        if (lines.isEmpty()) {
+            if (text(input.itemName()) == null || input.quantity() == null || text(input.storageType()) == null)
+                throw new ApiException(400, "请至少添加一个寄存品项");
+            lines.add(new StorageItemSave(null, null, input.itemName(), null, input.storageType(), input.quantity()));
+        }
+        long firstId = 0;
+        for (var line : lines) {
+            if (line == null || text(line.itemName()) == null || line.quantity() == null || line.quantity().signum() <= 0 || text(line.storageType()) == null)
+                throw new ApiException(400, "寄存品项信息不完整");
+            var kind = text(line.storageType()).toUpperCase(Locale.ROOT);
+            if (!Set.of("PRODUCT", "PROJECT").contains(kind)) throw new ApiException(400, "寄存品项类型不正确");
+            String itemName = line.itemName().trim();
+            String itemCode = text(line.itemCode());
+            String category = text(line.category());
+            Long itemId = line.itemId();
+            if (itemId != null) {
+                var catalog = repo.one("SELECT id,kind,code,name,category,status FROM biz_item WHERE tenant_id=? AND id=?", actor.tenantId(), itemId);
+                if (catalog == null || id(catalog, "status") != 1 || !kind.equals(IamRepository.text(catalog, "kind"))) throw new ApiException(400, "寄存品项不存在或类型不匹配");
+                itemName = IamRepository.text(catalog, "name");
+                itemCode = IamRepository.text(catalog, "code");
+                category = IamRepository.text(catalog, "category");
+            }
+            long id = repo.insert("INSERT INTO biz_customer_storage(tenant_id,customer_id,store_id,storage_type,item_id,item_code,item_category,item_name,quantity,remark,batch_id,operator_id,operator_name,operation_type,revoked) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)", actor.tenantId(), input.customerId(), requestedStoreId, kind, itemId, itemCode, category, itemName, line.quantity(), text(input.remark()), batchId, actor.userId(), operatorName, "CREATE");
+            if (firstId == 0) firstId = id;
+        }
+        return firstId;
+    }
+
+    private void applyStorageScope(AccountPrincipal actor, StringBuilder where, List<Object> args) {
+        if (actor.global("customers:read")) return;
+        var allowed = actor.scopes().getOrDefault("customers:read", Set.of()).stream().filter(value -> value > 0).toList();
+        if (allowed.isEmpty()) where.append(" AND 1=0");
+        else { where.append(" AND c.store_id IN (").append(marks(allowed.size())).append(")"); args.addAll(allowed); }
     }
 
     private void applyScope(AccountPrincipal actor, Long storeId, StringBuilder where, List<Object> args) {

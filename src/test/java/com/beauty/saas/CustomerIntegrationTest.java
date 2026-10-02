@@ -13,6 +13,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 import org.springframework.transaction.annotation.Transactional;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -98,5 +99,36 @@ class CustomerIntegrationTest {
         data(call("DELETE", "/customers/" + first, root, b.id(), null), 404);
         data(call("DELETE", "/customers/" + first, root, a.id(), null), 200);
         assertThat(data(call("GET", "/customers?page=1&pageSize=10", root, null, null), 200).path("total").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    void storageBatchCanBeDetailedClaimedAndRevokedWithinItsTenant() throws Exception {
+        long customerId = data(call("POST", "/customers", a.token(), null,
+            Map.of("name", "寄存顾客", "phone", "13800002088", "storeId", storeA)), 200).asLong();
+        long firstLineId = data(call("POST", "/customers/storage", a.token(), null,
+            Map.of("customerId", customerId, "storeId", storeA, "remark", "两项寄存", "items", List.of(
+                Map.of("itemName", "护理精油", "storageType", "PRODUCT", "quantity", 2),
+                Map.of("itemName", "面部护理", "storageType", "PROJECT", "quantity", 1)
+            ))), 200).asLong();
+
+        var storage = data(call("GET", "/customers/storage?page=1&pageSize=10", a.token(), null, null), 200);
+        assertThat(storage.path("total").asInt()).isEqualTo(2);
+        String batchId = storage.path("records").get(0).path("batchId").asText();
+        assertThat(batchId).isNotBlank();
+        assertThat(data(call("GET", "/customers/storage/" + batchId, a.token(), null, null), 200).path("items").size()).isEqualTo(2);
+        data(call("GET", "/customers/storage/" + batchId, b.token(), null, null), 404);
+        assertThat(data(call("GET", "/customers/" + customerId + "/storage", a.token(), null, null), 200).path("total").asInt()).isEqualTo(2);
+
+        data(call("POST", "/customers/storage/lines/" + firstLineId + "/claim", b.token(), null, Map.of("quantity", 1)), 404);
+        data(call("POST", "/customers/storage/lines/" + firstLineId + "/claim", a.token(), null, Map.of("quantity", 1)), 200);
+        var partiallyClaimed = data(call("GET", "/customers/storage/" + batchId, a.token(), null, null), 200);
+        assertThat(partiallyClaimed.path("items").get(0).path("quantity").decimalValue()).isEqualByComparingTo("1");
+        data(call("POST", "/customers/storage/lines/" + firstLineId + "/claim", a.token(), null, Map.of("quantity", 1)), 200);
+        assertThat(data(call("GET", "/customers/" + customerId + "/storage", a.token(), null, null), 200).path("total").asInt()).isEqualTo(1);
+
+        data(call("POST", "/customers/storage/" + batchId + "/revoke", b.token(), null, null), 404);
+        data(call("POST", "/customers/storage/" + batchId + "/revoke", a.token(), null, null), 200);
+        assertThat(data(call("GET", "/customers/" + customerId + "/storage", a.token(), null, null), 200).path("total").asInt()).isZero();
+        data(call("POST", "/customers/storage/" + batchId + "/revoke", a.token(), null, null), 404);
     }
 }

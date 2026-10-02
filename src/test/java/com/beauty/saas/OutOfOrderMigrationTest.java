@@ -30,7 +30,7 @@ class OutOfOrderMigrationTest {
             .hasMessageContaining("not applied to database: 10");
 
         var withFix = Flyway.configure().dataSource(url, "sa", "").outOfOrder(true).load();
-        assertThat(withFix.migrate().migrationsExecuted).isEqualTo(4); // V10, V12, V13, V14
+        assertThat(withFix.migrate().migrationsExecuted).isEqualTo(6); // V10, V12, V13, V14, V15, V16
         assertThat(withFix.migrate().migrationsExecuted).isZero();
 
         try (var connection = DriverManager.getConnection(url, "sa", "");

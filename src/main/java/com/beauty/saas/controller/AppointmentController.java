@@ -23,11 +23,21 @@ public class AppointmentController {
 
     @GetMapping public Result<Page<Map<String,Object>>> list(
         @RequestParam(required=false) @DateTimeFormat(iso=DateTimeFormat.ISO.DATE) LocalDate date,
+        @RequestParam(required=false) @DateTimeFormat(iso=DateTimeFormat.ISO.DATE) LocalDate startDate,
+        @RequestParam(required=false) @DateTimeFormat(iso=DateTimeFormat.ISO.DATE) LocalDate endDate,
         @RequestParam(required=false) Long departmentId, @RequestParam(required=false) String status,
-        @RequestParam(defaultValue="1") int page, @RequestParam(defaultValue="200") int pageSize) {
-        return Result.success(appointments.list(new AppointmentQuery(date, departmentId, status, page, pageSize)));
+        @RequestParam(required=false) String keyword, @RequestParam(defaultValue="ALL") String searchBy,
+        @RequestParam(defaultValue="1") int page, @RequestParam(defaultValue="100") int pageSize) {
+        return Result.success(appointments.list(new AppointmentQuery(date, startDate, endDate, departmentId, status, keyword, searchBy, page, pageSize)));
+    }
+    @GetMapping("/settings") public Result<Map<String,Object>> settings(@RequestParam Long departmentId) {
+        return Result.success(appointments.settings(departmentId));
+    }
+    @PutMapping("/settings") public Result<Map<String,Object>> settings(@Valid @RequestBody AppointmentSettingsSave input) {
+        return Result.success(appointments.saveSettings(input));
     }
     @PostMapping public Result<Long> create(@Valid @RequestBody AppointmentSave input) { return Result.success(appointments.save(null, input)); }
+    @PostMapping("/recurring") public Result<java.util.List<Long>> recurring(@Valid @RequestBody RecurringAppointmentSave input) { return Result.success(appointments.saveRecurring(input)); }
     @PutMapping("/{id}") public Result<Long> update(@PathVariable long id, @Valid @RequestBody AppointmentSave input) { return Result.success(appointments.save(id, input)); }
     @DeleteMapping("/{id}") public Result<Void> delete(@PathVariable long id) { appointments.delete(id); return Result.success(); }
 }

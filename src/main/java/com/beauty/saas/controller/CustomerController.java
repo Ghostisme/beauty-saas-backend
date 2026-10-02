@@ -33,6 +33,23 @@ public class CustomerController {
         @RequestParam(required=false) String storageType) {
         return Result.success(customers.storages(new StorageQuery(page, pageSize, keyword, storeId, storageType)));
     }
+    @GetMapping("/storage/{batchId}") public Result<Map<String,Object>> storageDetail(@PathVariable String batchId) {
+        return Result.success(customers.storageDetail(batchId));
+    }
+    @PostMapping("/storage/{batchId}/revoke") public Result<Void> revokeStorage(@PathVariable String batchId) {
+        customers.revokeStorage(batchId);
+        return Result.success();
+    }
+    @PostMapping("/storage/lines/{id}/claim") public Result<Void> claimStorage(@PathVariable long id, @Valid @RequestBody StorageClaim input) {
+        customers.claimStorage(id, input);
+        return Result.success();
+    }
+    @GetMapping("/{id}/storage") public Result<Page<Map<String,Object>>> customerStorage(
+        @PathVariable long id,
+        @RequestParam(defaultValue="1") int page,
+        @RequestParam(defaultValue="100") int pageSize) {
+        return Result.success(customers.customerStorages(id, page, pageSize));
+    }
     @PostMapping public Result<Long> create(@Valid @RequestBody CustomerSave input) { return Result.success(customers.save(null, input)); }
     @PutMapping("/{id}") public Result<Long> update(@PathVariable long id, @Valid @RequestBody CustomerSave input) { return Result.success(customers.save(id, input)); }
     @DeleteMapping("/{id}") public Result<Void> delete(@PathVariable long id) { customers.delete(id); return Result.success(); }

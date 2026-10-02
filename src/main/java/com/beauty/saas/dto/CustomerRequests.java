@@ -1,8 +1,10 @@
 package com.beauty.saas.dto;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 
 public final class CustomerRequests {
     private CustomerRequests() {}
@@ -38,13 +40,28 @@ public final class CustomerRequests {
         Long storeId,
         String source) {}
 
+    /** A line in a customer-storage batch.  itemId is optional so a historic
+     * manually-entered storage record remains valid, while catalog-backed
+     * records can retain their code/category for the detail screens. */
+    public record StorageItemSave(
+        @Positive Long itemId,
+        @Size(max = 64) String itemCode,
+        @Size(max = 150) String itemName,
+        @Size(max = 100) String category,
+        @Pattern(regexp = "PRODUCT|PROJECT") String storageType,
+        @DecimalMin(value = "0.001") BigDecimal quantity) {}
+
+    /** Supports both the original single-line API and the new batch form. */
     public record StorageSave(
         @NotNull @Positive Long customerId,
         Long storeId,
-        @NotBlank @Pattern(regexp = "PRODUCT|PROJECT") String storageType,
-        @NotBlank @Size(max = 150) String itemName,
-        @NotNull @DecimalMin(value = "0.001") BigDecimal quantity,
-        @Size(max = 300) String remark) {}
+        @Pattern(regexp = "PRODUCT|PROJECT") String storageType,
+        @Size(max = 150) String itemName,
+        @DecimalMin(value = "0.001") BigDecimal quantity,
+        @Size(max = 300) String remark,
+        @Size(max = 100) List<@Valid StorageItemSave> items) {}
 
     public record StorageQuery(int page, int pageSize, String keyword, Long storeId, String storageType) {}
+
+    public record StorageClaim(@NotNull @DecimalMin(value = "0.001") BigDecimal quantity) {}
 }
