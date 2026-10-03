@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS biz_commission_scheme (
     rate DECIMAL(8,4) NOT NULL DEFAULT 0,
     fixed_amount DECIMAL(14,2) NOT NULL DEFAULT 0,
     description VARCHAR(500),
+    config_json TEXT,
     status TINYINT NOT NULL DEFAULT 1,
     version BIGINT NOT NULL DEFAULT 0,
     create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

@@ -125,6 +125,15 @@ class CatalogIntegrationTest {
             Map.of("kind", "PRODUCT", "name", "跨企业规则", "basis", "PERCENT", "rate", new BigDecimal("0.1000"),
                 "fixedAmount", new BigDecimal("0.00"), "status", 1, "rules", List.of(foreign))), 400);
         assertThat(saved.asLong()).isPositive();
+
+        var project = data(call("POST", "/items?kind=PROJECT", a.token(), null,
+            Map.of("code", "PROJECT-001", "name", "补水修护", "category", "入肤系统", "price", new BigDecimal("398.00"), "durationMinutes", 60, "status", 1)), 200).asLong();
+        var configJson = "{\"version\":1,\"storeIds\":[" + storeA + "],\"staffIds\":[],\"rules\":[{\"key\":\"item:" + project + "\",\"label\":\"补水修护\",\"type\":\"ITEM\",\"itemId\":" + project + ",\"values\":{\"SERVICE_CASH\":{\"designated\":2,\"rotation\":1,\"guestDesignated\":2,\"guestRotation\":1,\"unit\":\"PERCENT\"}}}]}";
+        data(call("POST", "/commissions", a.token(), null,
+            Map.of("kind", "PROJECT", "name", "项目提成方案", "basis", "PERCENT", "rate", new BigDecimal("0.0000"),
+                "fixedAmount", new BigDecimal("0.00"), "status", 1, "rules", List.of(), "configJson", configJson)), 200);
+        var projectSchemes = data(call("GET", "/commissions?kind=PROJECT&page=1&pageSize=10", a.token(), null, null), 200);
+        assertThat(projectSchemes.path("records").get(0).path("configJson").asText()).isEqualTo(configJson);
     }
 
     @Test

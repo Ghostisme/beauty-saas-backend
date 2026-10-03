@@ -34,6 +34,8 @@ public final class ItemRequests {
         @NotNull @DecimalMin(value="0.00") @Digits(integer=4,fraction=4) BigDecimal rate,
         @NotNull @DecimalMin(value="0.00") @Digits(integer=12,fraction=2) BigDecimal fixedAmount,
         @Size(max=500) String description, @NotNull @Min(0) @Max(1) Integer status,
-        @NotNull @Size(max=100) List<@Valid CommissionRule> rules) {}
+        @NotNull @Size(max=100) List<@Valid CommissionRule> rules,
+        /** Optional JSON payload for richer project commission settings (stores, staff and matrix rules). */
+        @Size(max=100000) String configJson) {}
     public record Page<T>(List<T> records, long total, int page, int pageSize) {}
 }
