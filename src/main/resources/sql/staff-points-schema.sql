@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS biz_staff_points (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    tenant_id BIGINT NOT NULL,
+    department_id BIGINT NOT NULL DEFAULT 0,
+    user_id BIGINT NOT NULL,
+    point_type VARCHAR(20) NOT NULL,
+    points BIGINT NOT NULL,
+    point_item VARCHAR(100) NOT NULL,
+    reason VARCHAR(500) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'APPROVED',
+    submitted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    effective_date DATE NOT NULL,
+    reviewer_user_id BIGINT,
+    review_time TIMESTAMP NULL,
+    review_note VARCHAR(500),
+    deleted TINYINT NOT NULL DEFAULT 0,
+    updater_user_id BIGINT NOT NULL,
+    create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_staff_points_list (tenant_id, deleted, submitted_at, id),
+    INDEX idx_staff_points_balance (tenant_id, user_id, status, deleted),
+    INDEX idx_staff_points_store (tenant_id, department_id, deleted)
+);
