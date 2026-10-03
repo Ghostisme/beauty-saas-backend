@@ -198,7 +198,7 @@ public class IamService {
         args.add(keyword(search)); args.add(keyword(search)); args.add(keyword(search));
         long total=repo.count("SELECT COUNT(*) FROM sys_user u"+where,args.toArray());
         args.add(pageSize); args.add((page-1)*pageSize);
-        var rows=repo.rows("SELECT u.id,u.username,u.nickname,u.phone,u.email,u.status,u.create_time FROM sys_user u"+where+" ORDER BY u.id DESC LIMIT ? OFFSET ?",args.toArray());
+        var rows=repo.rows("SELECT u.id,u.username,u.nickname,u.phone,u.email,u.status,u.position_id,p.name position_name,u.create_time FROM sys_user u LEFT JOIN biz_staff_position p ON p.tenant_id=u.tenant_id AND p.id=u.position_id"+where+" ORDER BY u.id DESC LIMIT ? OFFSET ?",args.toArray());
         if (!rows.isEmpty()) {
             List<Object> relatedArgs=new ArrayList<>(List.of(actor.tenantId())); rows.forEach(row -> relatedArgs.add(id(row,"id")));
             String in=" IN ("+marks(rows.size())+")";
@@ -246,11 +246,13 @@ public class IamService {
             }
         }
         if (isOwner && !ownerGrant) throw new ApiException(409,"不能移除企业负责人的管理员身份");
+        if (request.positionId()!=null && repo.one("SELECT id FROM biz_staff_position WHERE tenant_id=? AND id=? AND status=1",tenant,request.positionId())==null)
+            throw new ApiException(404,"职位不存在或已停用");
         long user;
-        if (recordId==null) user=repo.insert("INSERT INTO sys_user(tenant_id,username,password,nickname,phone,email,status) VALUES(?,?,?,?,?,?,?)",tenant,request.username(),passwords.hash(request.password()),request.nickname().trim(),request.phone(),request.email(),request.status());
+        if (recordId==null) user=repo.insert("INSERT INTO sys_user(tenant_id,username,password,nickname,phone,email,status,position_id) VALUES(?,?,?,?,?,?,?,?)",tenant,request.username(),passwords.hash(request.password()),request.nickname().trim(),request.phone(),request.email(),request.status(),request.positionId());
         else {
             user=recordId;
-            repo.update("UPDATE sys_user SET nickname=?,phone=?,email=?,auth_version=auth_version+CASE WHEN status<>? THEN 1 ELSE 0 END,status=?,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?",request.nickname().trim(),request.phone(),request.email(),request.status(),request.status(),tenant,user);
+            repo.update("UPDATE sys_user SET nickname=?,phone=?,email=?,position_id=?,auth_version=auth_version+CASE WHEN status<>? THEN 1 ELSE 0 END,status=?,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?",request.nickname().trim(),request.phone(),request.email(),request.positionId(),request.status(),request.status(),tenant,user);
         }
         repo.update("DELETE FROM sys_user_role WHERE tenant_id=? AND user_id=?",tenant,user);
         repo.update("DELETE FROM sys_user_department WHERE tenant_id=? AND user_id=?",tenant,user);
@@ -282,7 +284,9 @@ public class IamService {
             roles.forEach(role -> role.put("permissionCodes",grants.stream().filter(p -> id(p,"roleId")==id(role,"id")).map(p -> text(p,"code")).toList()));
         }
         List<Map<String,Object>> permissions=actor.global("roles:read") ? repo.rows("SELECT code,name,module FROM sys_permission ORDER BY id") : List.of();
+        List<Map<String,Object>> positions=(actor.global("roles:read") || actor.global("users:write"))
+            ? repo.rows("SELECT id,code,name,remark,status,create_time FROM biz_staff_position WHERE tenant_id=? ORDER BY id",actor.tenantId()) : List.of();
         var roomDepartmentIds=departments.stream().filter(d -> id(d,"status")==1 && actor.can("rooms:write",id(d,"id"))).map(d -> id(d,"id")).toList();
-        return Map.of("departments",departments,"roles",roles,"permissions",permissions,"companyPermissions",AccessService.COMPANY_PERMISSIONS,"roomDepartmentIds",roomDepartmentIds);
+        return Map.of("departments",departments,"roles",roles,"positions",positions,"permissions",permissions,"companyPermissions",AccessService.COMPANY_PERMISSIONS,"roomDepartmentIds",roomDepartmentIds);
     }
 }

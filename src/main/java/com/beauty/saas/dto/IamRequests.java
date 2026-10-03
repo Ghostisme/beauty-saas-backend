@@ -29,7 +29,8 @@ public final class IamRequests {
         @NotBlank @Size(max=50) String nickname, @Size(max=20) String phone, @Email @Size(max=100) String email,
         @NotNull @Min(0) @Max(1) Integer status, @Size(max=72) String password,
         @NotNull @Size(max=100) List<@NotNull @Positive Long> departmentIds,
-        @NotNull @Size(min=1,max=100, message="至少分配一个角色") List<@NotNull @Valid RoleGrant> roleGrants) {}
+        @NotNull @Size(min=1,max=100, message="至少分配一个角色") List<@NotNull @Valid RoleGrant> roleGrants,
+        @Positive Long positionId) {}
     public record PasswordReset(@NotBlank @Size(min=8,max=72) String password) {}
     public record PasswordChange(@NotBlank @Size(max=128) String currentPassword, @NotBlank @Size(min=8,max=72) String newPassword) {}
     public record Page<T>(List<T> records, long total, int page, int pageSize) {}

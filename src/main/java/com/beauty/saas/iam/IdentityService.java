@@ -67,6 +67,8 @@ public class IdentityService {
             if (suppliedKey == null || !MessageDigest.isEqual(provisioningKey.getBytes(StandardCharsets.UTF_8),suppliedKey.getBytes(StandardCharsets.UTF_8))) throw new ApiException(403,"请使用平台超级管理员登录");
         }
         long tenant=repo.insert("INSERT INTO sys_tenant(code,name) VALUES(?,?)",request.code(),request.name().trim());
+        String[][] positions={{"STORE_MANAGER","店长"},{"HOST","主理人"},{"FRONT_DESK","前台"},{"BEAUTICIAN","美容师"},{"EMPLOYEE","员工"}};
+        for (String[] position : positions) repo.insert("INSERT INTO biz_staff_position(tenant_id,code,name) VALUES(?,?,?)",tenant,position[0],position[1]);
         String[][] roles={{"ADMIN","管理员"},{"STORE_MANAGER","店长"},{"HOST","主理人"},{"FRONT_DESK","前台"},{"BEAUTICIAN","美容师"},{"EMPLOYEE","员工"},{"CUSTOMER","顾客"}};
         for (String[] role : roles) {
             long roleId=repo.insert("INSERT INTO sys_role(tenant_id,code,name,builtin) VALUES(?,?,?,1)",tenant,role[0],role[1]);
