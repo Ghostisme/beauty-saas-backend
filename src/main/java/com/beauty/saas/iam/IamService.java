@@ -83,8 +83,9 @@ public class IamService {
             cursor=id(department,"parentId");
         }
         if (recordId != null && request.status()==0) assertDepartmentUnused(tenant,recordId);
-        if (recordId != null && !request.type().equals("STORE") && repo.count("SELECT COUNT(*) FROM biz_order WHERE tenant_id=? AND department_id=?",tenant,recordId)>0)
-            throw new ApiException(409,"已有订单的门店不能变更为部门，请保留历史订单的门店关联");
+        if (recordId != null && !request.type().equals("STORE") && (repo.count("SELECT COUNT(*) FROM biz_order WHERE tenant_id=? AND department_id=?",tenant,recordId)>0
+            || hasStaffSchedule(tenant,recordId)))
+            throw new ApiException(409,"已有业务记录的门店不能变更为部门，请保留历史门店关联");
         if (recordId == null) return repo.insert("INSERT INTO sys_department(tenant_id,parent_id,code,name,type,sort_order,status) VALUES(?,?,?,?,?,?,?)",tenant,parent,request.code().trim(),request.name().trim(),request.type(),request.sortOrder(),request.status());
         repo.update("UPDATE sys_department SET parent_id=?,code=?,name=?,type=?,sort_order=?,status=?,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?",parent,request.code().trim(),request.name().trim(),request.type(),request.sortOrder(),request.status(),tenant,recordId);
         return recordId;
@@ -93,8 +94,14 @@ public class IamService {
         if (repo.count("SELECT COUNT(*) FROM sys_department WHERE tenant_id=? AND parent_id=?",tenant,department)>0
             || repo.count("SELECT COUNT(*) FROM sys_user_department WHERE tenant_id=? AND department_id=?",tenant,department)>0
             || repo.count("SELECT COUNT(*) FROM sys_department_room WHERE tenant_id=? AND department_id=?",tenant,department)>0
-            || repo.count("SELECT COUNT(*) FROM sys_user_role WHERE tenant_id=? AND department_id=?",tenant,department)>0)
-            throw new ApiException(409,"请先移除下级部门、房间、用户及角色关联，再停用或删除");
+            || repo.count("SELECT COUNT(*) FROM sys_user_role WHERE tenant_id=? AND department_id=?",tenant,department)>0
+            || hasStaffSchedule(tenant,department))
+            throw new ApiException(409,"请先移除下级部门、房间、用户、角色及排班关联，再停用或删除");
+    }
+    private boolean hasStaffSchedule(long tenant, long department) {
+        return repo.count("SELECT COUNT(*) FROM biz_staff_shift_store WHERE tenant_id=? AND department_id=?",tenant,department)>0
+            || repo.count("SELECT COUNT(*) FROM biz_staff_schedule_participant WHERE tenant_id=? AND department_id=?",tenant,department)>0
+            || repo.count("SELECT COUNT(*) FROM biz_staff_assignment WHERE tenant_id=? AND department_id=?",tenant,department)>0;
     }
     @Transactional public void deleteDepartment(long recordId) {
         var actor=write("departments:write",true);
