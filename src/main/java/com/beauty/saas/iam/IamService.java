@@ -96,12 +96,13 @@ public class IamService {
             || repo.count("SELECT COUNT(*) FROM sys_department_room WHERE tenant_id=? AND department_id=?",tenant,department)>0
             || repo.count("SELECT COUNT(*) FROM sys_user_role WHERE tenant_id=? AND department_id=?",tenant,department)>0
             || hasStaffSchedule(tenant,department))
-            throw new ApiException(409,"请先移除下级部门、房间、用户、角色及排班关联，再停用或删除");
+            throw new ApiException(409,"请先移除下级部门、房间、用户、角色、排班及 SOP 自检关联，再停用或删除");
     }
     private boolean hasStaffSchedule(long tenant, long department) {
         return repo.count("SELECT COUNT(*) FROM biz_staff_shift_store WHERE tenant_id=? AND department_id=?",tenant,department)>0
             || repo.count("SELECT COUNT(*) FROM biz_staff_schedule_participant WHERE tenant_id=? AND department_id=?",tenant,department)>0
-            || repo.count("SELECT COUNT(*) FROM biz_staff_assignment WHERE tenant_id=? AND department_id=?",tenant,department)>0;
+            || repo.count("SELECT COUNT(*) FROM biz_staff_assignment WHERE tenant_id=? AND department_id=?",tenant,department)>0
+            || repo.count("SELECT COUNT(*) FROM biz_staff_sop_check WHERE tenant_id=? AND department_id=?",tenant,department)>0;
     }
     @Transactional public void deleteDepartment(long recordId) {
         var actor=write("departments:write",true);

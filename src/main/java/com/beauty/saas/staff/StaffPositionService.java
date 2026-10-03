@@ -39,7 +39,7 @@ public class StaffPositionService {
         if (code != null && repo.count("SELECT COUNT(*) FROM biz_staff_position WHERE tenant_id=? AND code=? AND id<>?", tenant, code, recordId == null ? 0 : recordId) > 0)
             throw new ApiException(409, "职位编号已存在");
         if (recordId != null && input.status() == 0 && inUse(tenant, recordId))
-            throw new ApiException(409, "职位正在被员工使用，不能停用");
+            throw new ApiException(409, "职位已关联员工或 SOP 规则，不能停用");
         if (recordId == null) return repo.insert("INSERT INTO biz_staff_position(tenant_id,code,name,remark,status) VALUES(?,?,?,?,?)", tenant, code, name, input.remark(), input.status());
         repo.update("UPDATE biz_staff_position SET code=?,name=?,remark=?,status=?,update_time=CURRENT_TIMESTAMP WHERE tenant_id=? AND id=?", code, name, input.remark(), input.status(), tenant, recordId);
         return recordId;
@@ -54,11 +54,12 @@ public class StaffPositionService {
         access.reload(actor).requireGlobal("roles:write");
         var row = repo.one("SELECT id FROM biz_staff_position WHERE tenant_id=? AND id=?", tenant, recordId);
         if (row == null) throw new ApiException(404, "职位不存在");
-        if (inUse(tenant, id(row,"id"))) throw new ApiException(409, "职位正在被员工使用，不能删除");
+        if (inUse(tenant, id(row,"id"))) throw new ApiException(409, "职位已关联员工或 SOP 规则，不能删除");
         repo.update("DELETE FROM biz_staff_position WHERE tenant_id=? AND id=?", tenant, recordId);
     }
 
     private boolean inUse(long tenant, long positionId) {
-        return repo.count("SELECT COUNT(*) FROM sys_user WHERE tenant_id=? AND position_id=? AND deleted=0", tenant, positionId) > 0;
+        return repo.count("SELECT COUNT(*) FROM sys_user WHERE tenant_id=? AND position_id=? AND deleted=0", tenant, positionId) > 0
+            || repo.count("SELECT COUNT(*) FROM biz_staff_sop_rule_position rp JOIN biz_staff_sop_rule r ON r.tenant_id=rp.tenant_id AND r.id=rp.rule_id WHERE rp.tenant_id=? AND rp.position_id=? AND r.deleted=0",tenant,positionId)>0;
     }
 }

@@ -11,6 +11,7 @@ import org.springframework.test.web.servlet.*;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.util.*;
 import static org.assertj.core.api.Assertions.*;
 
@@ -101,5 +102,65 @@ class StaffManagementIntegrationTest {
         assertThat(copied).isEqualTo(1);
         assertThat(data(call("POST","/staff/scheduling/copy-week",a.token(),Map.of("storeId",store,"startDate",date.plusWeeks(1).toString())),200).asInt()).isZero();
         assertThat(data(call("GET","/staff/scheduling/calendar?storeId="+store+"&startDate="+date.plusWeeks(1)+"&endDate="+date.plusWeeks(1),a.token(),null),200).path("assignments").size()).isEqualTo(1);
+    }
+
+    @Test void sopRulesAreTenantScopedAndChecksRespectPositionAndCycle() throws Exception {
+        var a=provision(); var b=provision();
+        long store=store(a,"sop-store"), foreignStore=store(b,"foreign-sop-store");
+        long position=data(call("POST","/staff/positions",a.token(),Map.of("name","护理顾问","status",1)),200).asLong();
+        assertThat(data(call("GET","/staff/sop/positions",a.token(),null),200).toString()).contains("护理顾问");
+        assertThat(data(call("GET","/staff/sop/positions",b.token(),null),200).toString()).doesNotContain("护理顾问");
+        String itemKey=UUID.randomUUID().toString(), subitemKey=UUID.randomUUID().toString();
+        var item=Map.of("key",itemKey,"name","仪容仪表检查","frequency","MONTHLY",
+            "subitems",List.of(Map.of("key",subitemKey,"name","工牌整洁")));
+        var rule=Map.of("name","月度仪容自检","allPositions",false,"positionIds",List.of(position),"items",List.of(item));
+        data(call("POST","/staff/sop/rules",a.token(),Map.of("name","无职位规则","allPositions",false,"positionIds",List.of(),"items",List.of(item))),400);
+        long ruleId=data(call("POST","/staff/sop/rules",a.token(),rule),200).asLong();
+        assertThat(data(call("GET","/staff/sop/rules",b.token(),null),200).size()).isZero();
+        data(call("PUT","/staff/sop/rules/"+ruleId,b.token(),rule),404);
+        data(call("DELETE","/staff/positions/"+position,a.token(),null),409);
+        long role=repo.count("SELECT id FROM sys_role WHERE tenant_id=? AND code='EMPLOYEE'",a.tenantId());
+        long employee=data(call("POST","/iam/users",a.token(),Map.of("username","sopemployee","nickname","护理顾问","password","TenantTest123!","status",1,
+            "departmentIds",List.of(store),"roleGrants",List.of(Map.of("roleId",role,"departmentId",store)),"positionId",position)),200).asLong();
+        String month=YearMonth.now().toString();
+        var monthly=data(call("GET","/staff/sop/monthly?storeId="+store+"&month="+month+"&positionId="+position,a.token(),null),200);
+        assertThat(monthly.path("staff").size()).isEqualTo(1);
+        assertThat(monthly.path("staff").get(0).path("rows").get(0).path("leafKey").asText()).isEqualTo(subitemKey);
+        data(call("GET","/staff/sop/monthly?storeId="+foreignStore+"&month="+month,a.token(),null),404);
+        data(call("GET","/staff/sop/monthly?storeId="+store+"&month=bad",a.token(),null),400);
+        LocalDate first=YearMonth.now().atDay(1);
+        var check=Map.of("storeId",store,"userId",employee,"ruleId",ruleId,"leafKey",subitemKey,"date",first.toString(),"checked",true);
+        data(call("PUT","/staff/sop/checks",a.token(),Map.of("storeId",store,"userId",employee,"ruleId",ruleId,"leafKey",subitemKey,"date",first.plusDays(1).toString(),"checked",true)),400);
+        data(call("PUT","/staff/sop/checks",a.token(),Map.of("storeId",foreignStore,"userId",employee,"ruleId",ruleId,"leafKey",subitemKey,"date",first.toString(),"checked",true)),404);
+        data(call("PUT","/staff/sop/checks",a.token(),check),200);
+        var savedChecks=data(call("GET","/staff/sop/monthly?storeId="+store+"&month="+month,a.token(),null),200).path("checks");
+        assertThat(savedChecks.size()).isEqualTo(1);
+        assertThat(savedChecks.get(0).path("resultMode").asText()).isEqualTo("COMPLETE");
+        data(call("PUT","/staff/sop/checks",a.token(),check),200);
+        var numberCheck=new HashMap<String,Object>(check);
+        numberCheck.put("mode","NUMBER");
+        numberCheck.put("value","1.50");
+        data(call("PUT","/staff/sop/checks",a.token(),numberCheck),200);
+        savedChecks=data(call("GET","/staff/sop/monthly?storeId="+store+"&month="+month,a.token(),null),200).path("checks");
+        assertThat(savedChecks.get(0).path("resultMode").asText()).isEqualTo("NUMBER");
+        assertThat(savedChecks.get(0).path("resultValue").asText()).isEqualTo("1.5");
+        numberCheck.put("value","不是数字");
+        data(call("PUT","/staff/sop/checks",a.token(),numberCheck),400);
+        var textCheck=new HashMap<String,Object>(check);
+        textCheck.put("mode","TEXT");
+        textCheck.put("value","  工牌整洁，已核对  ");
+        data(call("PUT","/staff/sop/checks",a.token(),textCheck),200);
+        savedChecks=data(call("GET","/staff/sop/monthly?storeId="+store+"&month="+month,a.token(),null),200).path("checks");
+        assertThat(savedChecks.get(0).path("resultMode").asText()).isEqualTo("TEXT");
+        assertThat(savedChecks.get(0).path("resultValue").asText()).isEqualTo("工牌整洁，已核对");
+        textCheck.put("value","   ");
+        data(call("PUT","/staff/sop/checks",a.token(),textCheck),400);
+        var revised=Map.of("name","月度仪容自检（修订）","allPositions",false,"positionIds",List.of(position),"items",List.of(item));
+        data(call("PUT","/staff/sop/rules/"+ruleId,a.token(),revised),200);
+        assertThat(data(call("GET","/staff/sop/rules",a.token(),null),200).get(0).path("name").asText()).contains("修订");
+        data(call("DELETE","/staff/sop/rules/"+ruleId,a.token(),null),200);
+        assertThat(data(call("GET","/staff/sop/rules",a.token(),null),200).size()).isZero();
+        assertThat(data(call("GET","/staff/sop/monthly?storeId="+store+"&month="+month,a.token(),null),200).path("staff").get(0).path("rows").size()).isZero();
+        assertThat(repo.count("SELECT COUNT(*) FROM biz_staff_sop_check WHERE tenant_id=? AND rule_id=?",a.tenantId(),ruleId)).isEqualTo(1);
     }
 }
